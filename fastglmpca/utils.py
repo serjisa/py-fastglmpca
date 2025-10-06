@@ -405,6 +405,8 @@ class PoissonGLMPCA:
 
         # Step 5: Optimization loop with block coordinate Newton updates
         for i in iterator:
+            # Step 5.0: Baseline log-likelihood for this iteration
+            prev_loglik = self.loglik_history_[-1]
             n, m = Y.shape
             clamp_min, clamp_max = -20, 20
             for k in range(self.n_pcs):
@@ -464,7 +466,6 @@ class PoissonGLMPCA:
                 LL, FF, loglik = self._line_search_update(Y, LL, FF, k, direction, update_target='FF')
 
             # Step 5.1: Check convergence by relative change in log-likelihood
-            prev_loglik = loglik
             loglik = self._poisson_log_likelihood(Y, LL, FF)
             self.loglik_history_.append(loglik.item())
 
