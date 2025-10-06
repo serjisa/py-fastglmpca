@@ -256,31 +256,44 @@ class PoissonGLMPCA:
             new_loglik = self._poisson_log_likelihood(Y, LL, FF)
             return LL, FF, new_loglik
 
-        # Step 3: Backtracking loop to find non-decreasing log-likelihood
+        # Step 3: Backtracking loop to find non-decreasing log-likelihood (in-place target update)
         ls_steps = 0
+        if update_target == "LL":
+            original = LL[k, :].clone()
+        else:
+            original = FF[k, :].clone()
+
         while ls_steps < self.ls_max_steps:
-            candLL = LL.clone()
-            candFF = FF.clone()
             if update_target == "LL":
-                candLL[k, :] = candLL[k, :] - alpha * direction
+                LL[k, :] = original - alpha * direction
             else:
-                candFF[k, :] = candFF[k, :] - alpha * direction
-            cand_loglik = self._poisson_log_likelihood(Y, candLL, candFF)
+                FF[k, :] = original - alpha * direction
+
+            cand_loglik = self._poisson_log_likelihood(Y, LL, FF)
             if torch.isnan(cand_loglik):
+                # revert and shrink step
+                if update_target == "LL":
+                    LL[k, :] = original
+                else:
+                    FF[k, :] = original
                 alpha = alpha * self.ls_beta
                 ls_steps += 1
                 continue
             if cand_loglik >= prev_loglik:
-                LL, FF = candLL, candFF
                 return LL, FF, cand_loglik
+            # revert and shrink step
+            if update_target == "LL":
+                LL[k, :] = original
+            else:
+                FF[k, :] = original
             alpha = alpha * self.ls_beta
             ls_steps += 1
 
         # Step 4: Fallback to last reduced step size if no improvement found
         if update_target == "LL":
-            LL[k, :] = LL[k, :] - (alpha * direction)
+            LL[k, :] = original - (alpha * direction)
         else:
-            FF[k, :] = FF[k, :] - (alpha * direction)
+            FF[k, :] = original - (alpha * direction)
         new_loglik = self._poisson_log_likelihood(Y, LL, FF)
         return LL, FF, new_loglik
 
@@ -409,11 +422,15 @@ class PoissonGLMPCA:
             prev_loglik = self.loglik_history_[-1]
             n, m = Y.shape
             clamp_min, clamp_max = -20, 20
+            # Precompute Y @ FF.T for all k to avoid repeated multiplications
+            if self.is_sparse:
+                YFF = torch.sparse.mm(Y, FF.T)  # [n, K]
+            else:
+                YFF = Y @ FF.T  # [n, K]
+
             for k in range(self.n_pcs):
-                if self.is_sparse:
-                    y_ff = torch.sparse.mm(Y, FF[k, :].unsqueeze(1)).squeeze()
-                else:
-                    y_ff = (Y @ FF[k, :])
+                # Use precomputed product for gradient term
+                y_ff = YFF[:, k]
 
                 exp_grad = torch.zeros(n, device=self.device)
                 hess_diag = torch.zeros(n, device=self.device)
@@ -437,11 +454,15 @@ class PoissonGLMPCA:
 
                 LL, FF, loglik = self._line_search_update(Y, LL, FF, k, direction, update_target='LL')
 
+            # Precompute Y.T @ LL.T for all k to avoid repeated multiplications
+            if self.is_sparse:
+                YTLL = torch.sparse.mm(Y.transpose(0, 1), LL.T)  # [m, K]
+            else:
+                YTLL = Y.T @ LL.T  # [m, K]
+
             for k in range(self.n_pcs):
-                if self.is_sparse:
-                    yT_ll = torch.sparse.mm(Y.transpose(0, 1), LL[k, :].unsqueeze(1)).squeeze()
-                else:
-                    yT_ll = (Y.T @ LL[k, :])
+                # Use precomputed product for gradient term
+                yT_ll = YTLL[:, k]
 
                 exp_grad = torch.zeros(m, device=self.device)
                 hess_diag = torch.zeros(m, device=self.device)
