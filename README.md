@@ -1,2 +1,56 @@
 # fastglmpca
-Python implementation of fastglmpca [Weine et al., Bioinformatics, 2024] algorithm with PyTorch
+
+Python implementation of `fastglmpca` ([Weine et al., Bioinformatics, 2024](https://doi.org/10.1093/bioinformatics/btae494)) algorithm with PyTorch backend.
+
+The main concept of `fastglmpca` is to use a fast iterative algorithm ("Alternative Poisson Regression") to find a low-rank approximation of the input matrix `Y` with a Poisson distribution. It might be used for dimensionality reduction of count data matrices (e.g. scRNA-Seq UMI matrices or nearest neighbours count matrices in Skip-Gram like representations). The original R package is available at [GitHub](https://github.com/stephenslab/fastglmpca), this Python package is **not** an official implementation.
+
+## Installation
+
+`fastglmpca` might be installed via `pip`:
+```bash
+pip install fastglmpca
+```
+or the latest development version can be installed from GitHub using:
+```bash
+pip install git+https://github.com/serjisa/fastglmpca
+```
+
+## Quck start
+
+`fastglmpca` works with both sparse and dense matrices. The input matrix `Y` should be a 2D array-like object with shape `(n_samples, n_features)`. The output matrix `Z` will have shape `(n_samples, n_components)`, where `n_components` is the number of components to be computed.
+
+```python
+import fastglmpca
+
+Z = fastglmpca.poisson(Y, n_pcs=10)
+```
+
+Example with scRNA-Seq dataset processing is available in [this notebook](https://github.com/serjisa/fastglmpca/blob/main/examples/scRNA-Seq.ipynb).
+
+## API
+
+Function `fastglmpca.poisson` has the following parameters:
+
+- `X` : np.ndarray or torch.Tensor or scipy.sparse matrix
+    Input data matrix of shape `(n_samples, n_features)`.
+- `n_pcs` : int, optional
+    Number of principal components to compute. Default is 30.
+- `max_iter` : int, optional
+    Maximum number of iterations for the optimization algorithm. Default is 1000.
+- `tol` : float, optional
+    Tolerance for convergence of the optimization algorithm. Default is 1e-4.
+- `col_size_factor` : bool, optional
+    Whether to use column size factor in the model. Default is True.
+- `row_intercept` : bool, optional
+    Whether to use row intercept in the model. Default is True.
+- `verbose` : bool, optional
+    Whether to print verbose output during fitting. Default is False.
+- `device` : str or None, optional
+    Device to use for computation. If None, uses "cuda" if available, otherwise "mps" if available,
+    otherwise "cpu". Default is None.
+- `progress_bar` : bool, optional
+    Whether to show a progress bar during fitting. Default is True.
+- `seed` : int or None, optional
+    Random seed for reproducibility. Default is 42.
+- `return_model` : bool, optional
+    Whether to return the fitted model object. Default is False.
