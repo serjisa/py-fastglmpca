@@ -2,7 +2,7 @@
 
 Python implementation of `fastglmpca` ([Weine et al., Bioinformatics, 2024](https://doi.org/10.1093/bioinformatics/btae494)) algorithm with PyTorch backend.
 
-The main concept of `fastglmpca` is to use a fast iterative algorithm ("Alternative Poisson Regression") to find a low-rank approximation of the input matrix `Y` with a Poisson distribution. It might be used for dimensionality reduction of count data matrices (e.g. scRNA-Seq UMI matrices or nearest neighbours count matrices in Skip-Gram like representations). The original R package is available at [GitHub](https://github.com/stephenslab/fastglmpca), this Python package is **not** an official implementation.
+The main concept of `fastglmpca` is to use a fast iterative algorithm ("Alternative Poisson Regression") to find a low-rank approximation of the input matrix `X` with a Poisson distribution. It might be used for dimensionality reduction of count data matrices (e.g. scRNA-Seq UMI matrices or nearest neighbours count matrices in Skip-Gram like representations). The original R package is available at [GitHub](https://github.com/stephenslab/fastglmpca), this Python package is **not** an official implementation.
 
 ## Installation
 
@@ -17,12 +17,12 @@ pip install git+https://github.com/serjisa/fastglmpca
 
 ## Quck start
 
-`fastglmpca` works with both sparse and dense matrices. The input matrix `Y` should be a 2D array-like object with shape `(n_samples, n_features)`. The output matrix `Z` will have shape `(n_samples, n_components)`, where `n_components` is the number of components to be computed.
+`fastglmpca` works with both sparse and dense matrices. The input matrix `X` should be a 2D array-like object with shape `(n_samples, n_features)`. The output matrix `Z` will have shape `(n_samples, n_components)`, where `n_components` is the number of components to be computed.
 
 ```python
 import fastglmpca
 
-Z = fastglmpca.poisson(Y, n_pcs=10)
+Z = fastglmpca.poisson(X, n_pcs=10)
 ```
 
 Example with scRNA-Seq dataset processing is available in [this notebook](https://github.com/serjisa/fastglmpca/blob/main/examples/scRNA-Seq.ipynb).
