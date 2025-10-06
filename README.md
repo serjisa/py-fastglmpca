@@ -54,3 +54,17 @@ Function `fastglmpca.poisson` has the following parameters:
     Random seed for reproducibility. Default is 42.
 - `return_model` : bool, optional
     Whether to return the fitted model object. Default is False.
+- `learning_rate` : float, optional
+    Base step size for updates (used as initial step when line search is enabled). Default is 0.5.
+- `line_search` : bool, optional
+    Enables backtracking line search to ensure monotonic improvement and better stability. Default is True.
+- `batch_size_rows` : int or None, optional
+    Number of rows for batched computations of expectation terms; tunes memory vs speed. Default uses an adaptive value up to 1024.
+- `batch_size_cols` : int or None, optional
+    Number of columns for batched computations of expectation terms; tunes memory vs speed. Default uses an adaptive value up to 1024.
+
+### Implementation Notes
+
+- Memory safety: offsets are stored as separate `row_offset` and `col_offset` vectors, avoiding construction of a dense `N x M` offset matrix and dense `Lambda` during optimization for sparse inputs. Required dense intermediates are computed in row/column batches.
+- Optimization strategy: block coordinate Newton updates with diagonal Hessian approximation are retained, but each update uses backtracking line search to prevent divergence with large steps and accelerate convergence when steps can be larger.
+- Sparse support: likelihood and gradients avoid materializing dense `Lambda` by operating over non-zero entries for the data term and using batched matrix multiplications for the expectation terms.

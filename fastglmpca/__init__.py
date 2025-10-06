@@ -1,7 +1,7 @@
 from .utils import PoissonGLMPCA
 import numpy as np
 
-__version__ = "0.0.1"
+__version__ = "0.0.2"
 
 def poisson(
     X,
@@ -15,6 +15,10 @@ def poisson(
     progress_bar: bool = True,
     seed: int | None = 42,
     return_model: bool = False,
+    learning_rate: float = 0.5,
+    line_search: bool = True,
+    batch_size_rows: int | None = None,
+    batch_size_cols: int | None = None,
 ) -> np.ndarray | PoissonGLMPCA:
     """
     Fit a Poisson GLM-PCA model to the input data.
@@ -44,6 +48,14 @@ def poisson(
         Random seed for reproducibility. Default is 42.
     return_model : bool, optional
         Whether to return the fitted model. If False, returns the principal components (U). Default is True.
+    learning_rate : float, optional
+        Base step size used in updates; when line search is enabled, serves as initial step.
+    line_search : bool, optional
+        Enable backtracking line search to improve stability and convergence speed.
+    batch_size_rows : int or None, optional
+        Batch size for row updates. If None, uses max(1, min(n_samples, 1024)). Default is None.
+    batch_size_cols : int or None, optional
+        Batch size for column updates. If None, uses max(1, min(n_samples, 1024)). Default is None.
 
     Returns
     -------
@@ -62,8 +74,18 @@ def poisson(
         device=device,
         progress_bar=progress_bar,
         seed=seed,
+        batch_size_rows=batch_size_rows,
+        batch_size_cols=batch_size_cols,
     )
-    model.fit(X)
+
+    model.fit(
+        X,
+        learning_rate=learning_rate,
+        line_search=line_search,
+        batch_size_rows=batch_size_rows,
+        batch_size_cols=batch_size_cols,
+    )
+
     if return_model:
         return model
     else:
