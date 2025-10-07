@@ -610,10 +610,8 @@ class PoissonGLMPCA:
 
         Returns
         -------
-        np.ndarray or scipy.sparse.csr_matrix
-            Expected counts of shape (n_samples, n_features). Returns a dense
-            array when the model was fitted on dense data, and a sparse matrix
-            when the model was fitted on sparse data.
+        np.ndarray
+            Expected counts of shape (n_samples, n_features).
 
         Raises
         ------
@@ -638,30 +636,6 @@ class PoissonGLMPCA:
             col_off = np.zeros(V.shape[0], dtype=np.float32)
 
         n, m = U.shape[0], V.shape[0]
-
-        if hasattr(self, "is_sparse") and self.is_sparse:
-            rows = []
-            cols = []
-            data = []
-            V_t = V
-            for i in range(n):
-                z_row = V_t @ (U[i, :] * d)
-                z_row = z_row + (row_off[i] if isinstance(row_off, np.ndarray) else float(row_off[i]))
-                z_row = z_row + col_off
-                if clip is not None:
-                    if isinstance(clip, tuple):
-                        low, high = clip
-                    else:
-                        low, high = (-float(clip), float(clip))
-                    z_row = np.clip(z_row, low, high)
-                lam_row = np.exp(z_row)
-                rows.append(np.full(m, i, dtype=np.int64))
-                cols.append(np.arange(m, dtype=np.int64))
-                data.append(lam_row.astype(np.float32, copy=False))
-            row_idx = np.concatenate(rows)
-            col_idx = np.concatenate(cols)
-            values = np.concatenate(data)
-            return sp.csr_matrix((values, (row_idx, col_idx)), shape=(n, m))
 
         Z = U @ np.diag(d) @ V.T + row_off[:, None] + col_off[None, :]
         if clip is not None:
