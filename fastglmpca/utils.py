@@ -590,3 +590,58 @@ class PoissonGLMPCA:
         self.U = U.detach().cpu().numpy()
         self.d = s.detach().cpu().numpy()
         self.V = V.detach().cpu().numpy()
+
+    def reconstruct_counts(self, clip: float | tuple[float, float] | None = 20.0) -> np.ndarray:
+        """
+        Reconstruct the expected counts matrix from the fitted model.
+
+        Computes the Poisson rate matrix using the stored orthonormal factors
+        and offsets as:
+
+            exp(U @ diag(d) @ V.T + row_offset[:, None] + col_offset[None, :])
+
+        Parameters
+        ----------
+        clip : float or tuple of float or None, optional
+            Clip the linear predictor before exponentiation to stabilize extremes.
+            A single float applies symmetric clipping to (-clip, clip); a
+            tuple specifies (low, high) bounds. If None, no clipping is
+            applied. Default is 20.0.
+
+        Returns
+        -------
+        np.ndarray
+            Dense array of shape (n_samples, n_features) with expected counts.
+
+        Raises
+        ------
+        RuntimeError
+            If the model has not been fitted and required attributes are missing.
+        """
+        if not (hasattr(self, "U") and hasattr(self, "V") and hasattr(self, "d")):
+            raise RuntimeError("Model is not fitted or factors are not finalized.")
+
+        U = self.U
+        V = self.V
+        d = self.d
+
+        if hasattr(self, "row_offset") and isinstance(self.row_offset, torch.Tensor):
+            row_off = self.row_offset.detach().cpu().numpy()
+        else:
+            row_off = np.zeros(U.shape[0], dtype=np.float32)
+
+        if hasattr(self, "col_offset") and isinstance(self.col_offset, torch.Tensor):
+            col_off = self.col_offset.detach().cpu().numpy()
+        else:
+            col_off = np.zeros(V.shape[0], dtype=np.float32)
+
+        Z = U @ np.diag(d) @ V.T + row_off[:, None] + col_off[None, :]
+
+        if clip is not None:
+            if isinstance(clip, tuple):
+                low, high = clip
+            else:
+                low, high = (-float(clip), float(clip))
+            Z = np.clip(Z, low, high)
+
+        return np.exp(Z)

@@ -22,14 +22,7 @@ def _synthetic_poisson_data(n=40, m=30, K=3, seed=123):
 
 
 def _predict_counts(model: PoissonGLMPCA) -> np.ndarray:
-    U = model.U
-    V = model.V
-    d = model.d
-    row_off = model.row_offset.detach().cpu().numpy()
-    col_off = model.col_offset.detach().cpu().numpy()
-    Z_lin = U @ np.diag(d) @ V.T + row_off[:, None] + col_off[None, :]
-    Z_lin = np.clip(Z_lin, -20.0, 20.0)
-    return np.exp(Z_lin)
+    return model.reconstruct_counts(clip=20.0)
 
 
 @pytest.mark.parametrize(
