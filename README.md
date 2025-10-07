@@ -57,7 +57,7 @@ Function `fastglmpca.poisson` has the following parameters:
 - `learning_rate` : float, optional
     Base step size for updates (used as initial step when line search is enabled). Default is 0.5.
 - `line_search` : bool, optional
-    Enables backtracking line search to ensure monotonic improvement and better stability. Default is True.
+    Enables backtracking line search to ensure monotonic improvement and better stability. Default is False.
 - `batch_size_rows` : int or None, optional
     Number of rows for batched computations of expectation terms; tunes memory vs speed. Default uses an adaptive value up to 1024.
 - `batch_size_cols` : int or None, optional
