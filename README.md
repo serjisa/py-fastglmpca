@@ -57,7 +57,15 @@ Function `fastglmpca.poisson` has the following parameters:
 - `learning_rate` : float, optional
     Base step size for updates (used as initial step when line search is enabled). Default is 0.5.
 - `line_search` : bool, optional
-    Enables backtracking line search to ensure monotonic improvement and better stability. Default is False.
+    Enables Armijo-style backtracking line search to improve stability. Default is False.
+- `ls_beta` : float, optional
+    Backtracking shrinkage factor used when `line_search=True`. Default is 0.5.
+- `ls_max_steps` : int, optional
+    Maximum number of backtracking steps per coordinate update when `line_search=True`. Default is 10.
+- `num_ccd_iter` : int, optional
+    Number of cyclic coordinate descent iterations per main iteration to refine factors. Default is 3.
+- `ls_c1` : float, optional
+    Armijo condition constant in (0,1) controlling acceptance strictness during line search. Default is 1e-4.
 - `batch_size_rows` : int or None, optional
     Number of rows for batched computations of expectation terms; tunes memory vs speed. Default uses an adaptive value up to 1024.
 - `batch_size_cols` : int or None, optional

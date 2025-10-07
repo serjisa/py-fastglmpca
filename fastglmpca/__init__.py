@@ -17,6 +17,10 @@ def poisson(
     return_model: bool = False,
     learning_rate: float = 0.5,
     line_search: bool = False,
+    ls_beta: float = 0.5,
+    ls_max_steps: int = 10,
+    num_ccd_iter: int = 3,
+    ls_c1: float = 1e-4,
     batch_size_rows: int | None = None,
     batch_size_cols: int | None = None,
     init: str = "svd",
@@ -52,7 +56,15 @@ def poisson(
     learning_rate : float, optional
         Base step size used in updates; when line search is enabled, serves as initial step.
     line_search : bool, optional
-        Enable backtracking line search to improve stability and convergence speed.
+        Enable Armijo-style backtracking line search. May increase compute; disabled by default.
+    ls_beta : float, optional
+        Backtracking shrinkage factor. Default is 0.5.
+    ls_max_steps : int, optional
+        Maximum number of backtracking steps. Default is 10.
+    num_ccd_iter : int, optional
+        Number of coordinate descent iterations per main iteration. Default is 3.
+    ls_c1 : float, optional
+        Armijo condition constant in (0,1). Default is 1e-4.
     batch_size_rows : int or None, optional
         Batch size for row updates. If None, uses max(1, min(n_samples, 1024)). Default is None.
     batch_size_cols : int or None, optional
@@ -81,6 +93,10 @@ def poisson(
         batch_size_cols=batch_size_cols,
         learning_rate=learning_rate,
         line_search=line_search,
+        ls_beta=ls_beta,
+        ls_max_steps=ls_max_steps,
+        num_ccd_iter=num_ccd_iter,
+        ls_c1=ls_c1,
     )
 
     model.fit(

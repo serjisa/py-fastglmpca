@@ -26,6 +26,7 @@ class PoissonGLMPCA:
         ls_beta: float = 0.5,
         ls_max_steps: int = 10,
         num_ccd_iter: int = 3,
+        ls_c1: float = 1e-4,
     ):
         """
         Initialize the Poisson GLM-PCA model.
@@ -65,6 +66,8 @@ class PoissonGLMPCA:
             Backtracking line search parameter. Default is 0.5.
         ls_max_steps : int, optional
             Maximum number of line search steps. Default is 10.
+        ls_c1 : float, optional
+            Armijo condition constant in (0,1). Default is 1e-4.
         """
         
         if n_pcs < 1:
@@ -86,6 +89,7 @@ class PoissonGLMPCA:
         self.ls_beta = ls_beta
         self.ls_max_steps = ls_max_steps
         self.num_ccd_iter = num_ccd_iter
+        self.ls_c1 = ls_c1
         
         if self.seed:
             torch.manual_seed(self.seed)
@@ -233,13 +237,13 @@ class PoissonGLMPCA:
         clamp_min, clamp_max = -20, 20
         
         if self.is_sparse:
-            YFF = torch.sparse.mm(Y, FF.T) # n x K
+            YFF = torch.sparse.mm(Y, FF.T)
         else:
-            YFF = Y @ FF.T # n x K
+            YFF = Y @ FF.T
         
         for _ in range(self.num_ccd_iter):
             for k in range(self.n_pcs):
-                y_ff_k = YFF[:, k] # n-dim vector
+                y_ff_k = YFF[:, k]
                 
                 exp_grad_k = torch.zeros(n, device=self.device)
                 hess_diag_k = torch.zeros(n, device=self.device)
@@ -262,18 +266,14 @@ class PoissonGLMPCA:
                 direction = grad_k / hess_diag_k
                 
                 if self.line_search:
-                    prev_loglik = self._poisson_log_likelihood(Y, LL, FF)
                     alpha = self.learning_rate
+                    p = -direction
+                    grad_dot_p = torch.dot(grad_k, p)
                     accepted = False
                     for _ in range(self.ls_max_steps):
-                        LL_candidate = LL.clone()
-                        LL_candidate[k, :] = LL[k, :] - alpha * direction
-                        new_loglik = self._poisson_log_likelihood(Y, LL_candidate, FF)
-                        if torch.isnan(new_loglik):
-                            alpha *= self.ls_beta
-                            continue
-                        if new_loglik >= prev_loglik:
-                            LL = LL_candidate
+                        delta_est = alpha * grad_dot_p + 0.5 * torch.sum(hess_diag_k * (alpha * p) * (alpha * p))
+                        if delta_est >= self.ls_c1 * alpha * grad_dot_p:
+                            LL[k, :] = LL[k, :] + alpha * p
                             accepted = True
                             break
                         alpha *= self.ls_beta
@@ -326,18 +326,14 @@ class PoissonGLMPCA:
                 direction = grad_k / hess_diag_k
                 
                 if self.line_search:
-                    prev_loglik = self._poisson_log_likelihood(Y, LL, FF)
                     alpha = self.learning_rate
+                    p = -direction
+                    grad_dot_p = torch.dot(grad_k, p)
                     accepted = False
                     for _ in range(self.ls_max_steps):
-                        FF_candidate = FF.clone()
-                        FF_candidate[k, :] = FF[k, :] - alpha * direction
-                        new_loglik = self._poisson_log_likelihood(Y, LL, FF_candidate)
-                        if torch.isnan(new_loglik):
-                            alpha *= self.ls_beta
-                            continue
-                        if new_loglik >= prev_loglik:
-                            FF = FF_candidate
+                        delta_est = alpha * grad_dot_p + 0.5 * torch.sum(hess_diag_k * (alpha * p) * (alpha * p))
+                        if delta_est >= self.ls_c1 * alpha * grad_dot_p:
+                            FF[k, :] = FF[k, :] + alpha * p
                             accepted = True
                             break
                         alpha *= self.ls_beta
