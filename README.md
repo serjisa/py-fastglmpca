@@ -1,5 +1,9 @@
 # fastglmpca
 
+![Tests](https://github.com/serjisa/fastglmpca/actions/workflows/tests.yml/badge.svg)
+![PyPI](https://img.shields.io/pypi/v/fastglmpca)
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+
 Python implementation of `fastglmpca` ([Weine et al., Bioinformatics, 2024](https://doi.org/10.1093/bioinformatics/btae494)) algorithm with PyTorch backend.
 
 The main concept of `fastglmpca` is to use a fast iterative algorithm ("Alternative Poisson Regression") to find a low-rank approximation of the input matrix `X` with a Poisson distribution. It might be used for dimensionality reduction of count data matrices (e.g. scRNA-Seq UMI matrices or nearest neighbours count matrices in Skip-Gram like representations).
