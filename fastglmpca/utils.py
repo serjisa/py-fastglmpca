@@ -1,3 +1,4 @@
+"""Utilities for Poisson GLM-PCA with cyclic coordinate descent updates."""
 from __future__ import annotations
 import torch
 import numpy as np
@@ -8,6 +9,13 @@ from scipy.sparse.linalg import svds
 
 
 class PoissonGLMPCA:
+    """
+    Poisson GLM-PCA model fitted via cyclic coordinate descent (CCD).
+
+    Estimates low-rank factors under a Poisson likelihood. Optional
+    backtracking line search accepts updates only when the full
+    Poisson log-likelihood increases.
+    """
     def __init__(
         self,
         n_pcs: int = 30,
@@ -26,7 +34,7 @@ class PoissonGLMPCA:
         ls_beta: float = 0.5,
         ls_max_steps: int = 10,
         num_ccd_iter: int = 3,
-        ls_c1: float = 1e-4,
+
     ):
         """
         Initialize the Poisson GLM-PCA model.
@@ -66,8 +74,6 @@ class PoissonGLMPCA:
             Backtracking line search parameter. Default is 0.5.
         ls_max_steps : int, optional
             Maximum number of line search steps. Default is 10.
-        ls_c1 : float, optional
-            Armijo condition constant in (0,1). Default is 1e-4.
         """
         
         if n_pcs < 1:
@@ -89,7 +95,7 @@ class PoissonGLMPCA:
         self.ls_beta = ls_beta
         self.ls_max_steps = ls_max_steps
         self.num_ccd_iter = num_ccd_iter
-        self.ls_c1 = ls_c1
+
         
         if self.seed:
             torch.manual_seed(self.seed)
@@ -116,7 +122,20 @@ class PoissonGLMPCA:
 
     def _initialize_params(self, Y: torch.Tensor, init: str = "svd") -> tuple[torch.Tensor, torch.Tensor]:
         """
-        Initialize the parameters LL and FF.
+        Initialize factor matrices LL and FF.
+
+        Parameters
+        ----------
+        Y : torch.Tensor
+            Nonnegative count matrix of shape (n_samples, n_features).
+        init : {"svd", "random"}
+            Initialization method. "svd" uses SVD of log1p(Y) to derive a strong starting point;
+            "random" initializes LL and FF with small Gaussian noise.
+
+        Returns
+        -------
+        tuple of torch.Tensor
+            LL with shape (K, n_samples) and FF with shape (K, n_features).
         """
         if self.seed is not None:
             torch.manual_seed(self.seed)
@@ -173,7 +192,21 @@ class PoissonGLMPCA:
         FF: torch.Tensor,
     ) -> torch.Tensor:
         """
-        Compute the Poisson log-likelihood WITHOUT forming full n x m dense matrix.
+        Compute the Poisson log-likelihood using batched operations.
+ 
+        Parameters
+        ----------
+        Y : torch.Tensor
+            Nonnegative count matrix of shape (n_samples, n_features).
+        LL : torch.Tensor
+            Left factor of shape (K, n_samples).
+        FF : torch.Tensor
+            Right factor of shape (K, n_features).
+ 
+        Returns
+        -------
+        torch.Tensor
+            Scalar tensor with the total log-likelihood.
         """
         clamp_min, clamp_max = -20, 20
         n, m = Y.shape
@@ -231,7 +264,21 @@ class PoissonGLMPCA:
         FF: torch.Tensor,
     ) -> torch.Tensor:
         """
-        Update LL using Cyclic Coordinate Descent.
+        Update LL via cyclic coordinate descent (CCD) with optional backtracking.
+ 
+        Parameters
+        ----------
+        Y : torch.Tensor
+            Nonnegative count matrix.
+        LL : torch.Tensor
+            Left factor (K x n_samples).
+        FF : torch.Tensor
+            Right factor (K x n_features).
+ 
+        Returns
+        -------
+        torch.Tensor
+            Updated LL tensor.
         """
         n, m = Y.shape
         clamp_min, clamp_max = -20, 20
@@ -268,14 +315,17 @@ class PoissonGLMPCA:
                 if self.line_search:
                     alpha = self.learning_rate
                     p = -direction
-                    grad_dot_p = torch.dot(grad_k, p)
+                    prev_loglik = self._poisson_log_likelihood(Y, LL, FF)
                     accepted = False
                     for _ in range(self.ls_max_steps):
-                        delta_est = alpha * grad_dot_p + 0.5 * torch.sum(hess_diag_k * (alpha * p) * (alpha * p))
-                        if delta_est >= self.ls_c1 * alpha * grad_dot_p:
-                            LL[k, :] = LL[k, :] + alpha * p
+                        old_row = LL[k, :].clone()
+                        LL[k, :] = old_row + alpha * p
+                        new_loglik = self._poisson_log_likelihood(Y, LL, FF)
+                        if new_loglik >= prev_loglik:
+                            self._last_alpha = float(alpha)
                             accepted = True
                             break
+                        LL[k, :] = old_row
                         alpha *= self.ls_beta
                     if not accepted:
                         pass
@@ -291,7 +341,21 @@ class PoissonGLMPCA:
         FF: torch.Tensor,
     ) -> torch.Tensor:
         """
-        Update FF using Cyclic Coordinate Descent.
+        Update FF via cyclic coordinate descent (CCD) with optional backtracking.
+ 
+        Parameters
+        ----------
+        Y : torch.Tensor
+            Nonnegative count matrix.
+        LL : torch.Tensor
+            Left factor (K x n_samples).
+        FF : torch.Tensor
+            Right factor (K x n_features).
+ 
+        Returns
+        -------
+        torch.Tensor
+            Updated FF tensor.
         """
         n, m = Y.shape
         clamp_min, clamp_max = -20, 20
@@ -328,14 +392,17 @@ class PoissonGLMPCA:
                 if self.line_search:
                     alpha = self.learning_rate
                     p = -direction
-                    grad_dot_p = torch.dot(grad_k, p)
+                    prev_loglik = self._poisson_log_likelihood(Y, LL, FF)
                     accepted = False
                     for _ in range(self.ls_max_steps):
-                        delta_est = alpha * grad_dot_p + 0.5 * torch.sum(hess_diag_k * (alpha * p) * (alpha * p))
-                        if delta_est >= self.ls_c1 * alpha * grad_dot_p:
-                            FF[k, :] = FF[k, :] + alpha * p
+                        old_row = FF[k, :].clone()
+                        FF[k, :] = old_row + alpha * p
+                        new_loglik = self._poisson_log_likelihood(Y, LL, FF)
+                        if new_loglik >= prev_loglik:
+                            self._last_alpha = float(alpha)
                             accepted = True
                             break
+                        FF[k, :] = old_row
                         alpha *= self.ls_beta
                     if not accepted:
                         pass
@@ -346,7 +413,19 @@ class PoissonGLMPCA:
 
     def _orthonormalize_factors(self, LL: torch.Tensor, FF: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
-        Orthonormalize factors to stabilize updates.
+        Orthonormalize factor matrices to stabilize optimization.
+ 
+        Parameters
+        ----------
+        LL : torch.Tensor
+            Left factor (K x n_samples).
+        FF : torch.Tensor
+            Right factor (K x n_features).
+ 
+        Returns
+        -------
+        tuple of torch.Tensor
+            Orthonormalized (LL, FF) pair.
         """
         K = self.n_pcs
         if K == 1:
@@ -368,7 +447,19 @@ class PoissonGLMPCA:
         init: str = "svd",
     ) -> PoissonGLMPCA:
         """
-        Fit the Poisson GLM-PCA model to the input data.
+        Fit the Poisson GLM-PCA model.
+ 
+        Parameters
+        ----------
+        Y : array-like, torch.Tensor, or scipy.sparse matrix
+            Input count matrix of shape (n_samples, n_features).
+        init : {"svd", "random"}
+            Initialization method for LL and FF.
+ 
+        Returns
+        -------
+        PoissonGLMPCA
+            The fitted model instance.
         """
         if self.line_search:
             warnings.warn("Line search with CCD is computationally expensive and not recommended. Consider setting line_search=False.")
@@ -461,7 +552,7 @@ class PoissonGLMPCA:
             if self.verbose:
                 print(f"Iter {i+1:3d} | Log-Likelihood: {loglik:.4f} | Change: {delta:.2e}")
             if self.progress_bar:
-                iterator.set_postfix(loglik=f"{loglik:.4f}", delta=f"{delta:.2e}")
+                iterator.set_postfix(loglik=f"{loglik:.4f}", delta=f"{delta:.2e}", alpha=f"{getattr(self, '_last_alpha', self.learning_rate):.3f}" if self.line_search else None)
 
             if delta < self.tol:
                 if self.verbose or self.progress_bar:
@@ -476,7 +567,14 @@ class PoissonGLMPCA:
 
     def _finalize_factors(self, LL: torch.Tensor, FF: torch.Tensor) -> None:
         """
-        Compute final orthogonal factors U, V and singular values d.
+        Finalize model by computing orthogonal U and V and singular values d.
+ 
+        Parameters
+        ----------
+        LL : torch.Tensor
+            Final left factor (K x n_samples).
+        FF : torch.Tensor
+            Final right factor (K x n_features).
         """
         U_hat, V_hat = LL.T, FF.T
         
