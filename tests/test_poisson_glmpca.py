@@ -211,4 +211,4 @@ def test_fit_sparse_outputs_random_init():
     assert isinstance(model.d, np.ndarray)
     assert model.U.shape == (Y_sparse.shape[0], model.n_pcs)
     assert model.V.shape == (Y_sparse.shape[1], model.n_pcs)
-    assert model.d.shape == (model.n_pcs)
+    assert model.d.shape == (model.n_pcs,)
