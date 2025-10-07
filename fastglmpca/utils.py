@@ -552,7 +552,7 @@ class PoissonGLMPCA:
             if self.verbose:
                 print(f"Iter {i+1:3d} | Log-Likelihood: {loglik:.4f} | Change: {delta:.2e}")
             if self.progress_bar:
-                iterator.set_postfix(loglik=f"{loglik:.4f}", delta=f"{delta:.2e}", alpha=f"{getattr(self, '_last_alpha', self.learning_rate):.3f}" if self.line_search else None)
+                iterator.set_postfix(loglik=f"{loglik:.4f}", delta=f"{delta:.2e}", alpha=f"{getattr(self, '_last_alpha', self._last_alpha):.3f}" if self.line_search else None)
 
             if delta < self.tol:
                 if self.verbose or self.progress_bar:
