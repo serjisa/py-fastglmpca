@@ -197,12 +197,10 @@ class PoissonGLMPCA:
         n, m = Y.shape
 
         if hasattr(self, "is_sparse") and self.is_sparse:
-            # Ensure COO layout with unique indices
             try:
                 Y = Y.coalesce()
             except Exception:
                 pass
-            # Prefer public indices()/values() API when available
             if hasattr(Y, "indices") and hasattr(Y, "values"):
                 idx = Y.indices()
                 vals = Y.values()
