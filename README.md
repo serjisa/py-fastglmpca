@@ -2,7 +2,10 @@
 
 Python implementation of `fastglmpca` ([Weine et al., Bioinformatics, 2024](https://doi.org/10.1093/bioinformatics/btae494)) algorithm with PyTorch backend.
 
-The main concept of `fastglmpca` is to use a fast iterative algorithm ("Alternative Poisson Regression") to find a low-rank approximation of the input matrix `X` with a Poisson distribution. It might be used for dimensionality reduction of count data matrices (e.g. scRNA-Seq UMI matrices or nearest neighbours count matrices in Skip-Gram like representations). The original R package is available at [GitHub](https://github.com/stephenslab/fastglmpca), this Python package is **not** an official implementation.
+The main concept of `fastglmpca` is to use a fast iterative algorithm ("Alternative Poisson Regression") to find a low-rank approximation of the input matrix `X` with a Poisson distribution. It might be used for dimensionality reduction of count data matrices (e.g. scRNA-Seq UMI matrices or nearest neighbours count matrices in Skip-Gram like representations).
+
+The original R package is available at [GitHub](https://github.com/stephenslab/fastglmpca), this Python package is **not** an official implementation. In contrast to the original implementation, we don't use line
+search and instead use a constant learning rate.
 
 ## Installation
 
@@ -55,13 +58,7 @@ Function `fastglmpca.poisson` has the following parameters:
 - `return_model` : bool, optional
     Whether to return the fitted model object. Default is False.
 - `learning_rate` : float, optional
-    Base step size for updates (used as initial step when line search is enabled). Default is 0.5.
-- `line_search` : bool, optional
-    Enables backtracking line search that accepts a step only if it increases the full Poisson log-likelihood. Default is False.
-- `ls_beta` : float, optional
-    Backtracking shrinkage factor used when `line_search=True`. Default is 0.5.
-- `ls_max_steps` : int, optional
-    Maximum number of backtracking steps per coordinate update when `line_search=True`. Default is 10.
+    Step size used in updates. Default is 0.5.
 - `num_ccd_iter` : int, optional
     Number of cyclic coordinate descent iterations per main iteration to refine factors. Default is 3.
 - `batch_size_rows` : int or None, optional

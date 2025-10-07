@@ -16,9 +16,6 @@ def poisson(
     seed: int | None = 42,
     return_model: bool = False,
     learning_rate: float = 0.5,
-    line_search: bool = False,
-    ls_beta: float = 0.5,
-    ls_max_steps: int = 10,
     num_ccd_iter: int = 3,
     batch_size_rows: int | None = None,
     batch_size_cols: int | None = None,
@@ -53,13 +50,7 @@ def poisson(
     return_model : bool, optional
         Whether to return the fitted model. If False, returns the principal components (U). Default is True.
     learning_rate : float, optional
-        Base step size used in updates; when line search is enabled, serves as initial step.
-    line_search : bool, optional
-        Enables backtracking line search that accepts a step only if it increases the full Poisson log-likelihood. Default is False.
-    ls_beta : float, optional
-        Backtracking shrinkage factor. Default is 0.5.
-    ls_max_steps : int, optional
-        Maximum number of backtracking steps. Default is 10.
+        Step size used in updates. Default is 0.5.
     num_ccd_iter : int, optional
         Number of coordinate descent iterations per main iteration. Default is 3.
     batch_size_rows : int or None, optional
@@ -89,9 +80,6 @@ def poisson(
         batch_size_rows=batch_size_rows,
         batch_size_cols=batch_size_cols,
         learning_rate=learning_rate,
-        line_search=line_search,
-        ls_beta=ls_beta,
-        ls_max_steps=ls_max_steps,
         num_ccd_iter=num_ccd_iter,
     )
 

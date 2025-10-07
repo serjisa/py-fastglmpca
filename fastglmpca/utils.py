@@ -12,9 +12,7 @@ class PoissonGLMPCA:
     """
     Poisson GLM-PCA model fitted via cyclic coordinate descent (CCD).
 
-    Estimates low-rank factors under a Poisson likelihood. Optional
-    backtracking line search accepts updates only when the full
-    Poisson log-likelihood increases.
+    Estimates low-rank factors under a Poisson likelihood using a constant learning rate.
     """
     def __init__(
         self,
@@ -30,11 +28,7 @@ class PoissonGLMPCA:
         batch_size_rows: int | None = None,
         batch_size_cols: int | None = None,
         learning_rate: float = 0.5,
-        line_search: bool = False,
-        ls_beta: float = 0.5,
-        ls_max_steps: int = 10,
         num_ccd_iter: int = 3,
-
     ):
         """
         Initialize the Poisson GLM-PCA model.
@@ -68,12 +62,6 @@ class PoissonGLMPCA:
             Batch size for column updates. If None, uses max(1, min(n_samples, 1024)). Default is None.
         learning_rate : float, optional
             Step size used in updates. Default is 0.5.
-        line_search : bool, optional
-            Enable backtracking line search. Note: This is inefficient in CCD and is disabled by default.
-        ls_beta : float, optional
-            Backtracking line search parameter. Default is 0.5.
-        ls_max_steps : int, optional
-            Maximum number of line search steps. Default is 10.
         """
         
         if n_pcs < 1:
@@ -91,9 +79,6 @@ class PoissonGLMPCA:
         self.learning_rate = learning_rate
         self.batch_size_rows = batch_size_rows
         self.batch_size_cols = batch_size_cols
-        self.line_search = line_search
-        self.ls_beta = ls_beta
-        self.ls_max_steps = ls_max_steps
         self.num_ccd_iter = num_ccd_iter
 
         
@@ -212,8 +197,18 @@ class PoissonGLMPCA:
         n, m = Y.shape
 
         if hasattr(self, "is_sparse") and self.is_sparse:
-            idx = Y._indices()
-            vals = Y._values()
+            # Ensure COO layout with unique indices
+            try:
+                Y = Y.coalesce()
+            except Exception:
+                pass
+            # Prefer public indices()/values() API when available
+            if hasattr(Y, "indices") and hasattr(Y, "values"):
+                idx = Y.indices()
+                vals = Y.values()
+            else:
+                idx = Y._indices()
+                vals = Y._values()
             rows = idx[0]
             cols = idx[1]
 
@@ -264,7 +259,7 @@ class PoissonGLMPCA:
         FF: torch.Tensor,
     ) -> torch.Tensor:
         """
-        Update LL via cyclic coordinate descent (CCD) with optional backtracking.
+        Update LL via cyclic coordinate descent (CCD) with a constant learning rate.
  
         Parameters
         ----------
@@ -312,25 +307,7 @@ class PoissonGLMPCA:
                 hess_diag_k = torch.clamp(-hess_diag_k, max=-1e-8)
                 direction = grad_k / hess_diag_k
                 
-                if self.line_search:
-                    alpha = self.learning_rate
-                    p = -direction
-                    prev_loglik = self._poisson_log_likelihood(Y, LL, FF)
-                    accepted = False
-                    for _ in range(self.ls_max_steps):
-                        old_row = LL[k, :].clone()
-                        LL[k, :] = old_row + alpha * p
-                        new_loglik = self._poisson_log_likelihood(Y, LL, FF)
-                        if new_loglik >= prev_loglik:
-                            self._last_alpha = float(alpha)
-                            accepted = True
-                            break
-                        LL[k, :] = old_row
-                        alpha *= self.ls_beta
-                    if not accepted:
-                        pass
-                else:
-                    LL[k, :] = LL[k, :] - self.learning_rate * direction
+                LL[k, :] = LL[k, :] - self.learning_rate * direction
         
         return LL
 
@@ -341,7 +318,7 @@ class PoissonGLMPCA:
         FF: torch.Tensor,
     ) -> torch.Tensor:
         """
-        Update FF via cyclic coordinate descent (CCD) with optional backtracking.
+        Update FF via cyclic coordinate descent (CCD) with a constant learning rate.
  
         Parameters
         ----------
@@ -389,25 +366,7 @@ class PoissonGLMPCA:
                 hess_diag_k = torch.clamp(-hess_diag_k, max=-1e-8)
                 direction = grad_k / hess_diag_k
                 
-                if self.line_search:
-                    alpha = self.learning_rate
-                    p = -direction
-                    prev_loglik = self._poisson_log_likelihood(Y, LL, FF)
-                    accepted = False
-                    for _ in range(self.ls_max_steps):
-                        old_row = FF[k, :].clone()
-                        FF[k, :] = old_row + alpha * p
-                        new_loglik = self._poisson_log_likelihood(Y, LL, FF)
-                        if new_loglik >= prev_loglik:
-                            self._last_alpha = float(alpha)
-                            accepted = True
-                            break
-                        FF[k, :] = old_row
-                        alpha *= self.ls_beta
-                    if not accepted:
-                        pass
-                else:
-                    FF[k, :] = FF[k, :] - self.learning_rate * direction
+                FF[k, :] = FF[k, :] - self.learning_rate * direction
         
         return FF
 
@@ -461,8 +420,6 @@ class PoissonGLMPCA:
         PoissonGLMPCA
             The fitted model instance.
         """
-        if self.line_search:
-            warnings.warn("Line search with CCD is computationally expensive and not recommended. Consider setting line_search=False.")
 
         self.is_sparse = False
         self.loglik_history_ = []
@@ -552,7 +509,7 @@ class PoissonGLMPCA:
             if self.verbose:
                 print(f"Iter {i+1:3d} | Log-Likelihood: {loglik:.4f} | Change: {delta:.2e}")
             if self.progress_bar:
-                iterator.set_postfix(loglik=f"{loglik:.4f}", delta=f"{delta:.2e}", alpha=f"{getattr(self, '_last_alpha', self._last_alpha):.3f}" if self.line_search else None)
+                iterator.set_postfix(loglik=f"{loglik:.4f}", delta=f"{delta:.2e}")
 
             if delta < self.tol:
                 if self.verbose or self.progress_bar:
