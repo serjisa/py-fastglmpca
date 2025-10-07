@@ -16,9 +16,10 @@ def poisson(
     seed: int | None = 42,
     return_model: bool = False,
     learning_rate: float = 0.5,
-    line_search: bool = True,
+    line_search: bool = False,
     batch_size_rows: int | None = None,
     batch_size_cols: int | None = None,
+    init: str = "svd",
 ) -> np.ndarray | PoissonGLMPCA:
     """
     Fit a Poisson GLM-PCA model to the input data.
@@ -56,6 +57,8 @@ def poisson(
         Batch size for row updates. If None, uses max(1, min(n_samples, 1024)). Default is None.
     batch_size_cols : int or None, optional
         Batch size for column updates. If None, uses max(1, min(n_samples, 1024)). Default is None.
+    init : str, optional
+        Initialization method for the model. Can be "svd" or "random". Default is "svd".
 
     Returns
     -------
@@ -76,14 +79,13 @@ def poisson(
         seed=seed,
         batch_size_rows=batch_size_rows,
         batch_size_cols=batch_size_cols,
+        learning_rate=learning_rate,
+        line_search=line_search,
     )
 
     model.fit(
         X,
-        learning_rate=learning_rate,
-        line_search=line_search,
-        batch_size_rows=batch_size_rows,
-        batch_size_cols=batch_size_cols,
+        init=init,
     )
 
     if return_model:

@@ -21,9 +21,11 @@ class PoissonGLMPCA:
         seed: int | None = 42,
         batch_size_rows: int | None = None,
         batch_size_cols: int | None = None,
-        line_search: bool = True,
+        learning_rate: float = 0.5,
+        line_search: bool = False,
         ls_beta: float = 0.5,
         ls_max_steps: int = 10,
+        num_ccd_iter: int = 3,
     ):
         """
         Initialize the Poisson GLM-PCA model.
@@ -49,9 +51,22 @@ class PoissonGLMPCA:
             Whether to display a progress bar during fitting. Default is True.
         seed : int or None, optional
             Random seed for reproducibility. Default is 42.
+        num_ccd_iter : int, optional
+            Number of coordinate descent iterations per main iteration. Default is 3.
+        batch_size_rows : int or None, optional
+            Batch size for row updates. If None, uses max(1, min(n_samples, 1024)). Default is None.
+        batch_size_cols : int or None, optional
+            Batch size for column updates. If None, uses max(1, min(n_samples, 1024)). Default is None.
+        learning_rate : float, optional
+            Step size used in updates. Default is 0.5.
+        line_search : bool, optional
+            Enable backtracking line search. Note: This is inefficient in CCD and is disabled by default.
+        ls_beta : float, optional
+            Backtracking line search parameter. Default is 0.5.
+        ls_max_steps : int, optional
+            Maximum number of line search steps. Default is 10.
         """
         
-        # Step 1: Validate inputs and set defaults
         if n_pcs < 1:
             warnings.warn("Number of PCs (K) must be 1 or greater. Using K=30 instead.")
             n_pcs = 30
@@ -64,18 +79,18 @@ class PoissonGLMPCA:
         self.verbose = verbose
         self.progress_bar = progress_bar
         self.seed = seed
+        self.learning_rate = learning_rate
         self.batch_size_rows = batch_size_rows
         self.batch_size_cols = batch_size_cols
         self.line_search = line_search
         self.ls_beta = ls_beta
         self.ls_max_steps = ls_max_steps
+        self.num_ccd_iter = num_ccd_iter
         
-        # Step 2: Seed random generators for reproducibility
         if self.seed:
             torch.manual_seed(self.seed)
             np.random.seed(self.seed)
         
-        # Step 3: Resolve compute device preference and availability
         if device is None:
             if torch.cuda.is_available():
                 self.device = "cuda"
@@ -95,59 +110,55 @@ class PoissonGLMPCA:
                 device = "cpu"
             self.device = device
 
-    def _initialize_params(self, Y: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def _initialize_params(self, Y: torch.Tensor, init: str = "svd") -> tuple[torch.Tensor, torch.Tensor]:
         """
-        Initialize the parameters LL and FF using SVD on the log-transformed data.
-
-        Parameters
-        ----------
-        Y : torch.Tensor
-            Input data matrix of shape (n_samples, n_features).
-
-        Returns
-        -------
-        LL : torch.Tensor
-            Initialized left singular vectors of shape (n_pcs, n_samples).
-        FF : torch.Tensor
-            Initialized right singular vectors of shape (n_pcs, n_features).
+        Initialize the parameters LL and FF.
         """
-        # Step 1: Seed for deterministic initialization
         if self.seed is not None:
             torch.manual_seed(self.seed)
             np.random.seed(self.seed)
 
-        # Step 2: Announce initialization
+        if init not in ["svd", "random"]:
+            warnings.warn("Initialization method must be 'svd' or 'random'. Using 'svd' instead.")
+            init = "svd"
+
         if self.verbose:
-            print("Initializing parameters using SVD...")
+            print(f"Initializing parameters using '{init}' method...")
 
-        # Step 3: Compute SVD on log1p(Y), using sparse path when needed
-        if hasattr(self, "is_sparse") and self.is_sparse:
-            Y_scipy = sp.coo_matrix(
-                (Y._values().cpu().numpy(), (Y._indices()[0].cpu().numpy(), Y._indices()[1].cpu().numpy())),
-                shape=Y.shape
-            )
-            Y_log1p_sparse = Y_scipy.log1p()
-            U, s, Vh = svds(Y_log1p_sparse, k=self.n_pcs)
-            U, s, Vh = U[:, ::-1], s[::-1], Vh[::-1, :]
-            
-            U_k = torch.from_numpy(U.copy())
-            V_k = torch.from_numpy(Vh.T.copy())
-            d_k = torch.from_numpy(s.copy())
+        n, m = Y.shape
+
+        if init.lower() == "svd":
+            if hasattr(self, "is_sparse") and self.is_sparse:
+                Y_scipy = sp.coo_matrix(
+                    (Y._values().cpu().numpy(), (Y._indices()[0].cpu().numpy(), Y._indices()[1].cpu().numpy())),
+                    shape=Y.shape
+                )
+                Y_log1p_sparse = Y_scipy.log1p()
+                k = min(self.n_pcs, n - 1, m - 1)
+                U, s, Vh = svds(Y_log1p_sparse, k=k)
+                U, s, Vh = U[:, ::-1], s[::-1], Vh[::-1, :]
+                
+                U_k = torch.from_numpy(U.copy())
+                V_k = torch.from_numpy(Vh.T.copy())
+                d_k = torch.from_numpy(s.copy())
+            else:
+                Y_log1p = torch.log1p(Y)
+                try:
+                    U, S, Vh = torch.linalg.svd(Y_log1p, full_matrices=False)
+                    V = Vh.T
+                except torch.linalg.LinAlgError:
+                    U, S, V = torch.svd(Y_log1p)
+
+                k = self.n_pcs
+                U_k = U[:, :k]
+                V_k = V[:, :k]
+                d_k = S[:k]
+
+            LL = (U_k * torch.sqrt(d_k)).T
+            FF = (V_k * torch.sqrt(d_k)).T
         else:
-            Y_log1p = torch.log1p(Y)
-            try:
-                U, S, Vh = torch.linalg.svd(Y_log1p, full_matrices=False)
-                V = Vh.T
-            except torch.linalg.LinAlgError:
-                U, S, V = torch.svd(Y_log1p)
-
-            U_k = U[:, :self.n_pcs]
-            V_k = V[:, :self.n_pcs]
-            d_k = S[:self.n_pcs]
-
-        # Step 4: Form initial LL, FF from truncated SVD
-        LL = (U_k * torch.sqrt(d_k)).T
-        FF = (V_k * torch.sqrt(d_k)).T
+            LL = torch.randn(self.n_pcs, n, device=self.device) * 1e-4
+            FF = torch.randn(self.n_pcs, m, device=self.device) * 1e-4
         
         return LL.to(self.device), FF.to(self.device)
 
@@ -158,27 +169,11 @@ class PoissonGLMPCA:
         FF: torch.Tensor,
     ) -> torch.Tensor:
         """
-        Compute the Poisson log-likelihood for the given data and parameters.
-
-        Parameters
-        ----------
-        Y : torch.Tensor
-            Input data matrix of shape (n_samples, n_features).
-        LL : torch.Tensor
-            Left singular vectors of shape (n_pcs, n_samples).
-        FF : torch.Tensor
-            Right singular vectors of shape (n_pcs, n_features).
-
-        Returns
-        -------
-        log_likelihood : torch.Tensor
-            Poisson log-likelihood value.
+        Compute the Poisson log-likelihood WITHOUT forming full n x m dense matrix.
         """
-        # Step 1: Set numerical clamps and dimensions
         clamp_min, clamp_max = -20, 20
         n, m = Y.shape
 
-        # Step 2: Evaluate term1 on non-zeros and term2 via batched exp for sparse
         if hasattr(self, "is_sparse") and self.is_sparse:
             idx = Y._indices()
             vals = Y._values()
@@ -196,146 +191,154 @@ class PoissonGLMPCA:
             bsz = self.batch_size_rows or max(1, min(n, 1024))
             for start in range(0, n, bsz):
                 end = min(n, start + bsz)
-                LL_b = LL[:, start:end]  # K x b
+                LL_b = LL[:, start:end]
                 Z = LL_b.T @ FF
                 Z = Z + self.row_offset[start:end].unsqueeze(1) + self.col_offset.unsqueeze(0)
                 Z = torch.clamp(Z, clamp_min, clamp_max)
                 total = total + torch.exp(Z).sum()
             term2 = total
+            
         else:
-            # Step 3: Dense path computes full log_lambda but avoids forming Lambda
-            log_lambda_hat = LL.T @ FF
-            log_lambda = log_lambda_hat + self.row_offset.view(-1, 1) + self.col_offset.view(1, -1)
-            log_lambda = torch.clamp(log_lambda, clamp_min, clamp_max)
-            term1 = (Y * log_lambda).sum()
-            term2 = torch.exp(log_lambda).sum()
+            term1_total = torch.tensor(0.0, device=self.device)
+            term2_total = torch.tensor(0.0, device=self.device)
+            
+            bsz = self.batch_size_rows or max(1, min(n, 1024))
+            for start in range(0, n, bsz):
+                end = min(n, start + bsz)
+                Y_batch = Y[start:end, :]
+                LL_b = LL[:, start:end]
+                
+                log_lambda_batch = LL_b.T @ FF
+                log_lambda_batch = log_lambda_batch + self.row_offset[start:end].unsqueeze(1) + self.col_offset.unsqueeze(0)
+                log_lambda_batch = torch.clamp(log_lambda_batch, clamp_min, clamp_max)
+                
+                term1_total = term1_total + (Y_batch * log_lambda_batch).sum()
+                term2_total = term2_total + torch.exp(log_lambda_batch).sum()
+            
+            term1 = term1_total
+            term2 = term2_total
 
         return term1 - term2
 
-    def _line_search_update(
+    def _update_LL_batch(
         self,
         Y: torch.Tensor,
         LL: torch.Tensor,
         FF: torch.Tensor,
-        k: int,
-        direction: torch.Tensor,
-        update_target: str,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> torch.Tensor:
         """
-        Perform backtracking line search for updating either LL[k, :] or FF[k, :].
-
-        Parameters
-        ----------
-        Y : torch.Tensor
-            Input data matrix.
-        LL : torch.Tensor
-            Current left factor [K, n].
-        FF : torch.Tensor
-            Current right factor [K, m].
-        k : int
-            Component index to update.
-        direction : torch.Tensor
-            Proposed Newton direction for the parameter block.
-        update_target : str
-            Either "LL" or "FF" to indicate which factor to update.
-
-        Returns
-        -------
-        LL, FF, loglik : tuple
-            Updated factors and the resulting log-likelihood.
+        Update LL using Cyclic Coordinate Descent.
         """
-        # Step 1: Compute current log-likelihood and set initial step size
-        alpha = self.learning_rate
-        prev_loglik = self._poisson_log_likelihood(Y, LL, FF)
-        # Step 2: Apply single-step update if line search is disabled
-        if not self.line_search:
-            if update_target == "LL":
-                LL[k, :] = LL[k, :] - (alpha * direction)
-            else:
-                FF[k, :] = FF[k, :] - (alpha * direction)
-            new_loglik = self._poisson_log_likelihood(Y, LL, FF)
-            return LL, FF, new_loglik
-
-        # Step 3: Backtracking loop to find non-decreasing log-likelihood (in-place target update)
-        ls_steps = 0
-        if update_target == "LL":
-            original = LL[k, :].clone()
+        n, m = Y.shape
+        clamp_min, clamp_max = -20, 20
+        
+        if self.is_sparse:
+            YFF = torch.sparse.mm(Y, FF.T) # n x K
         else:
-            original = FF[k, :].clone()
+            YFF = Y @ FF.T # n x K
+        
+        for _ in range(self.num_ccd_iter):
+            for k in range(self.n_pcs):
+                y_ff_k = YFF[:, k] # n-dim vector
+                
+                exp_grad_k = torch.zeros(n, device=self.device)
+                hess_diag_k = torch.zeros(n, device=self.device)
+                ff_k = FF[k, :]
+                ff_k_sq = ff_k * ff_k
+                
+                bsz = self.batch_size_rows or max(1, min(n, 1024))
+                for start in range(0, n, bsz):
+                    end = min(n, start + bsz)
+                    LL_b = LL[:, start:end]
+                    Z = LL_b.T @ FF
+                    Z = Z + self.row_offset[start:end].unsqueeze(1) + self.col_offset.unsqueeze(0)
+                    Z = torch.clamp(Z, clamp_min, clamp_max)
+                    Lambda_b = torch.exp(Z)
+                    exp_grad_k[start:end] = Lambda_b @ ff_k
+                    hess_diag_k[start:end] = Lambda_b @ ff_k_sq
+                
+                grad_k = y_ff_k - exp_grad_k
+                hess_diag_k = torch.clamp(-hess_diag_k, max=-1e-8)
+                direction = grad_k / hess_diag_k
+                
+                LL[k, :] = LL[k, :] - self.learning_rate * direction
+        
+        return LL
 
-        while ls_steps < self.ls_max_steps:
-            if update_target == "LL":
-                LL[k, :] = original - alpha * direction
-            else:
-                FF[k, :] = original - alpha * direction
-
-            cand_loglik = self._poisson_log_likelihood(Y, LL, FF)
-            if torch.isnan(cand_loglik):
-                # revert and shrink step
-                if update_target == "LL":
-                    LL[k, :] = original
-                else:
-                    FF[k, :] = original
-                alpha = alpha * self.ls_beta
-                ls_steps += 1
-                continue
-            if cand_loglik >= prev_loglik:
-                return LL, FF, cand_loglik
-            # revert and shrink step
-            if update_target == "LL":
-                LL[k, :] = original
-            else:
-                FF[k, :] = original
-            alpha = alpha * self.ls_beta
-            ls_steps += 1
-
-        # Step 4: Fallback to last reduced step size if no improvement found
-        if update_target == "LL":
-            LL[k, :] = original - (alpha * direction)
+    def _update_FF_batch(
+        self,
+        Y: torch.Tensor,
+        LL: torch.Tensor,
+        FF: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Update FF using Cyclic Coordinate Descent.
+        """
+        n, m = Y.shape
+        clamp_min, clamp_max = -20, 20
+        
+        if self.is_sparse:
+            YTLL = torch.sparse.mm(Y.T, LL.T)
         else:
-            FF[k, :] = original - (alpha * direction)
-        new_loglik = self._poisson_log_likelihood(Y, LL, FF)
-        return LL, FF, new_loglik
+            YTLL = Y.T @ LL.T
+        
+        for _ in range(self.num_ccd_iter):
+            for k in range(self.n_pcs):
+                yT_ll_k = YTLL[:, k]
+                
+                exp_grad_k = torch.zeros(m, device=self.device)
+                hess_diag_k = torch.zeros(m, device=self.device)
+                ll_k = LL[k, :]
+                ll_k_sq = ll_k * ll_k
+                
+                bszc = self.batch_size_cols or max(1, min(m, 1024))
+                for start in range(0, m, bszc):
+                    end = min(m, start + bszc)
+                    FF_b = FF[:, start:end]
+                    Z = LL.T @ FF_b
+                    Z = Z + self.row_offset.unsqueeze(1) + self.col_offset[start:end].unsqueeze(0)
+                    Z = torch.clamp(Z, clamp_min, clamp_max)
+                    Lambda_b = torch.exp(Z)
+                    exp_grad_k[start:end] = Lambda_b.T @ ll_k
+                    hess_diag_k[start:end] = Lambda_b.T @ ll_k_sq
+                
+                grad_k = yT_ll_k - exp_grad_k
+                hess_diag_k = torch.clamp(-hess_diag_k, max=-1e-8)
+                direction = grad_k / hess_diag_k
+                
+                FF[k, :] = FF[k, :] - self.learning_rate * direction
+        
+        return FF
+
+    def _orthonormalize_factors(self, LL: torch.Tensor, FF: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Orthonormalize factors to stabilize updates.
+        """
+        K = self.n_pcs
+        if K == 1:
+            return LL, FF
+        
+        try:
+            out = torch.linalg.svd(FF.T, full_matrices=False)
+            FF_new = out.U.T
+            LL_new = torch.diag(out.S) @ out.Vh @ LL
+            return LL_new, FF_new
+        except torch.linalg.LinAlgError:
+            warnings.warn("SVD in orthonormalization failed. Skipping step.")
+            return LL, FF
+
 
     def fit(
         self,
         Y,
-        learning_rate: float = 0.5,
-        line_search: bool = True,
-        batch_size_rows: int | None = None,
-        batch_size_cols: int | None = None,
+        init: str = "svd",
     ) -> PoissonGLMPCA:
         """
-        Fit the Poisson GLM-PCA model to the input data. Newton's method is used for optimization, with
-        block coordinate descent for updating the parameters. See more in [Weine et al., Bioinformatics, 2024].
-
-        Parameters
-        ----------
-        Y : array-like, torch.Tensor, or scipy.sparse matrix
-            Input data matrix of shape (n_samples, n_features). Can be dense or sparse.
-        learning_rate : float, optional
-            Learning rate for the optimization algorithm. Default is 0.5.
-            
-        Returns
-        -------
-        self : PoissonGLMPCA
-            The fitted model.
-            
-        Attributes
-        ----------
-        loglik_history_ : list
-            History of log-likelihood values during training.
+        Fit the Poisson GLM-PCA model to the input data.
         """
-        # Step 1: Record configuration overrides for this fit
-        self.learning_rate = learning_rate
-        self.line_search = bool(line_search)
+        if self.line_search:
+            warnings.warn("Line search with CCD is computationally expensive and not recommended. Consider setting line_search=False.")
 
-        if batch_size_rows is not None:
-            self.batch_size_rows = batch_size_rows
-        if batch_size_cols is not None:
-            self.batch_size_cols = batch_size_cols
-
-        # Step 2: Normalize input and set sparse/dense path
         self.is_sparse = False
         self.loglik_history_ = []
         
@@ -347,10 +350,7 @@ class PoissonGLMPCA:
             self.is_sparse = True
             if self.verbose:
                 print("Detected sparse input matrix. Using sparse optimizations.")
-            if isinstance(Y, sp.coo_matrix):
-                coo = Y
-            else:
-                coo = Y.tocoo()
+            coo = Y.tocoo()
                 
             indices = torch.LongTensor(np.vstack((coo.row, coo.col)))
             values = torch.FloatTensor(coo.data)
@@ -358,16 +358,16 @@ class PoissonGLMPCA:
             Y_sparse = torch.sparse_coo_tensor(indices, values, shape, dtype=torch.float32)
             try:
                 Y_sparse = Y_sparse.to(self.device)
-            except NotImplementedError:
-                warnings.warn("Sparse tensor conversion to device not supported. Using CPU instead. If you want to use MPS / CUDA, please convert the input matrix to dense format.")
+            except (NotImplementedError, RuntimeError):
+                warnings.warn("Sparse tensor conversion to device not supported or failed. Using CPU.")
                 self.device = "cpu"
                 Y_sparse = Y_sparse.to(self.device)
             Y = Y_sparse
         elif not isinstance(Y, torch.Tensor):
-            Y = torch.tensor(Y, dtype=torch.float32)
+            Y = torch.tensor(Y, dtype=torch.float32, device=self.device)
+        else:
             Y = Y.to(self.device)
 
-        # Step 3: Compute row/col offsets without forming dense N x M
         self.row_offset = torch.zeros(Y.shape[0], device=self.device)
         self.col_offset = torch.zeros(Y.shape[1], device=self.device)
         epsilon = 1e-8
@@ -381,112 +381,40 @@ class PoissonGLMPCA:
             self.col_offset = self.col_offset + col_offset
 
         if self.row_intercept:
-            if self.col_size_factor:
-                sum_col_means = col_means.sum()
-            else:
-                if self.is_sparse:
-                    sum_col_means = torch.sparse.sum(Y, dim=0).to_dense().sum() / Y.shape[0]
-                else:
-                    sum_col_means = Y.mean(dim=0).sum()
-            
             if self.is_sparse:
+                sum_col_means = (torch.sparse.sum(Y, dim=0).to_dense() / Y.shape[0]).sum()
                 row_sums = torch.sparse.sum(Y, dim=1).to_dense()
             else:
+                sum_col_means = Y.mean(dim=0).sum()
                 row_sums = Y.sum(dim=1)
             row_offset = torch.log(row_sums / (sum_col_means + epsilon) + epsilon)
             self.row_offset = self.row_offset + row_offset
 
-        # Step 4: Initialize LL, FF via SVD and evaluate initial likelihood
         n, m = Y.shape
         if self.verbose:
             print(f"Fitting GLM-PCA to {n} samples and {m} features on device: '{self.device}'")
             if self.is_sparse:
-                density = Y_sparse._nnz() / (n * m)
+                density = Y._nnz() / (n * m)
                 print(f"Sparse matrix density: {density:.4f}")
     
-        LL, FF = self._initialize_params(Y)
+        LL, FF = self._initialize_params(Y, init=init)
         loglik = self._poisson_log_likelihood(Y, LL, FF)
         self.loglik_history_.append(loglik.item())
         
         if self.verbose:
             print(f"Initial Log-Likelihood: {loglik:.4f}")
 
-        if self.progress_bar:
-            iterator = tqdm(range(self.max_iter), desc="GLM-PCA Iterations")
-        else:
-            iterator = range(self.max_iter)
+        iterator = tqdm(range(self.max_iter), desc="GLM-PCA Iterations") if self.progress_bar else range(self.max_iter)
 
-        # Step 5: Optimization loop with block coordinate Newton updates
         for i in iterator:
-            # Step 5.0: Baseline log-likelihood for this iteration
             prev_loglik = self.loglik_history_[-1]
-            n, m = Y.shape
-            clamp_min, clamp_max = -20, 20
-            # Precompute Y @ FF.T for all k to avoid repeated multiplications
-            if self.is_sparse:
-                YFF = torch.sparse.mm(Y, FF.T)  # [n, K]
-            else:
-                YFF = Y @ FF.T  # [n, K]
 
-            for k in range(self.n_pcs):
-                # Use precomputed product for gradient term
-                y_ff = YFF[:, k]
+            LL, FF = self._orthonormalize_factors(LL, FF)
+            LL = self._update_LL_batch(Y, LL, FF)
+            
+            FF, LL = self._orthonormalize_factors(FF, LL)
+            FF = self._update_FF_batch(Y, LL, FF)
 
-                exp_grad = torch.zeros(n, device=self.device)
-                hess_diag = torch.zeros(n, device=self.device)
-                ffk = FF[k, :]
-                ffk_sq = ffk * ffk
-
-                bsz = self.batch_size_rows or max(1, min(n, 1024))
-                for start in range(0, n, bsz):
-                    end = min(n, start + bsz)
-                    LL_b = LL[:, start:end]
-                    Z = LL_b.T @ FF
-                    Z = Z + self.row_offset[start:end].unsqueeze(1) + self.col_offset.unsqueeze(0)
-                    Z = torch.clamp(Z, clamp_min, clamp_max)
-                    Lambda_b = torch.exp(Z)
-                    exp_grad[start:end] = Lambda_b @ ffk
-                    hess_diag[start:end] = -(Lambda_b @ ffk_sq)
-
-                hess_diag = -torch.clamp(-hess_diag, min=1e-8)
-                grad_k = y_ff - exp_grad
-                direction = grad_k / hess_diag
-
-                LL, FF, loglik = self._line_search_update(Y, LL, FF, k, direction, update_target='LL')
-
-            # Precompute Y.T @ LL.T for all k to avoid repeated multiplications
-            if self.is_sparse:
-                YTLL = torch.sparse.mm(Y.transpose(0, 1), LL.T)  # [m, K]
-            else:
-                YTLL = Y.T @ LL.T  # [m, K]
-
-            for k in range(self.n_pcs):
-                # Use precomputed product for gradient term
-                yT_ll = YTLL[:, k]
-
-                exp_grad = torch.zeros(m, device=self.device)
-                hess_diag = torch.zeros(m, device=self.device)
-                llk = LL[k, :]
-                llk_sq = llk * llk
-
-                bszc = self.batch_size_cols or max(1, min(m, 1024))
-                for start in range(0, m, bszc):
-                    end = min(m, start + bszc)
-                    FF_b = FF[:, start:end]
-                    Z = LL.T @ FF_b
-                    Z = Z + self.row_offset.unsqueeze(1) + self.col_offset[start:end].unsqueeze(0)
-                    Z = torch.clamp(Z, clamp_min, clamp_max)
-                    Lambda_b = torch.exp(Z)
-                    exp_grad[start:end] = Lambda_b.T @ llk
-                    hess_diag[start:end] = -(Lambda_b.T @ llk_sq)
-
-                hess_diag = -torch.clamp(-hess_diag, min=1e-8)
-                grad_k = yT_ll - exp_grad
-                direction = grad_k / hess_diag
-
-                LL, FF, loglik = self._line_search_update(Y, LL, FF, k, direction, update_target='FF')
-
-            # Step 5.1: Check convergence by relative change in log-likelihood
             loglik = self._poisson_log_likelihood(Y, LL, FF)
             self.loglik_history_.append(loglik.item())
 
@@ -498,49 +426,47 @@ class PoissonGLMPCA:
 
             if self.verbose:
                 print(f"Iter {i+1:3d} | Log-Likelihood: {loglik:.4f} | Change: {delta:.2e}")
+            if self.progress_bar:
+                iterator.set_postfix(loglik=f"{loglik:.4f}", delta=f"{delta:.2e}")
 
             if delta < self.tol:
                 if self.verbose or self.progress_bar:
                     print(f"\nConvergence reached after {i+1} iterations.")
                 break
         
-        # Step 6: Warn if maximum iterations reached
-        if i == self.max_iter - 1 and self.verbose:
+        if i == self.max_iter - 1 and (self.verbose or self.progress_bar):
             warnings.warn(f"\nMaximum iterations ({self.max_iter}) reached without convergence.")
             
-        # Step 7: Finalize orthonormal factors via QR + small SVD
         self._finalize_factors(LL, FF)
+        return self
 
     def _finalize_factors(self, LL: torch.Tensor, FF: torch.Tensor) -> None:
         """
-        Compute final orthogonal factors U, V and singular values d without forming dense n x m.
-
-        This method performs QR decompositions of LL^T (n x K) and FF^T (m x K) to compute U, V, and d.
-
-        Parameters
-        ----------
-        LL : torch.Tensor
-            Left singular vectors of shape (n_samples, n_pcs).
-        FF : torch.Tensor
-            Right singular vectors of shape (n_features, n_pcs).
-            
-        Returns
-        -------
-        None
-            The computed orthogonal factors U, V and singular values d are stored in the model attributes.
+        Compute final orthogonal factors U, V and singular values d.
         """
-        # Step 1: QR decompositions of LL^T and FF^T (n x K, m x K)
-        QL, RL = torch.linalg.qr(LL.T, mode="reduced")
-        QF, RF = torch.linalg.qr(FF.T, mode="reduced")
+        U_hat, V_hat = LL.T, FF.T
+        
+        QU, RU = torch.linalg.qr(U_hat, mode="reduced")
+        QV, RV = torch.linalg.qr(V_hat, mode="reduced")
 
-        # Step 2: Small SVD on K x K core matrix
-        M = RL @ RF.T
-        Us, s, Vsh = torch.linalg.svd(M, full_matrices=False)
+        M = RU @ RV.T
+        try:
+            Um, s, Vmh = torch.linalg.svd(M, full_matrices=False)
+        except torch.linalg.LinAlgError:
+             warnings.warn("Final SVD failed. Factors may not be fully orthogonal.")
+             self.U = QU.detach().cpu().numpy()
+             self.d = torch.ones(self.n_pcs).detach().cpu().numpy()
+             self.V = QV.detach().cpu().numpy()
+             return
 
-        # Step 3: Compose final U, V from Q factors and SVD components
-        U = QL @ Us
-        V = QF @ Vsh.T
+        sort_indices = torch.argsort(s, descending=True)
+        s = s[sort_indices]
+        Um = Um[:, sort_indices]
+        Vmh = Vmh[sort_indices, :]
 
-        self.U = U[:, :self.n_pcs].detach().cpu().numpy()
-        self.d = s[:self.n_pcs].detach().cpu().numpy()
-        self.V = V[:, :self.n_pcs].detach().cpu().numpy()
+        U = QU @ Um
+        V = QV @ Vmh.T
+
+        self.U = U.detach().cpu().numpy()
+        self.d = s.detach().cpu().numpy()
+        self.V = V.detach().cpu().numpy()

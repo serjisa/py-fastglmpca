@@ -62,4 +62,5 @@ Function `fastglmpca.poisson` has the following parameters:
     Number of rows for batched computations of expectation terms; tunes memory vs speed. Default uses an adaptive value up to 1024.
 - `batch_size_cols` : int or None, optional
     Number of columns for batched computations of expectation terms; tunes memory vs speed. Default uses an adaptive value up to 1024.
-
+- `init` : str, optional
+    Initialization method for factor matrices. `'svd'` (default) uses SVD on `log1p(X)` to produce a strong starting point. `'random'` uses small Gaussian noise for LL and FF which can be useful for stress-testing convergence or avoiding SVD costs on extremely large inputs.
