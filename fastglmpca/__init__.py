@@ -1,3 +1,4 @@
+from __future__ import annotations
 from .utils import PoissonGLMPCA
 import numpy as np
 
