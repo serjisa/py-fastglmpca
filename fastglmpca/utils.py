@@ -540,8 +540,9 @@ class PoissonGLMPCA:
 
     def _finalize_factors(self, LL: torch.Tensor, FF: torch.Tensor) -> None:
         """
-        Finalize model by computing orthogonal U and V and singular values d.
- 
+        Finalize model by computing orthogonal U and V and singular values d. Also
+        store sample scores X, feature loadings B, and design matrices W and Z.
+
         Parameters
         ----------
         LL : torch.Tensor
@@ -550,6 +551,20 @@ class PoissonGLMPCA:
             Final right factor (K x n_features).
         """
         U_hat, V_hat = LL.T, FF.T
+
+        self.X = U_hat.detach().cpu().numpy()
+        self.B = FF.T.detach().cpu().numpy()
+
+        if hasattr(self, "row_offset") and isinstance(self.row_offset, torch.Tensor):
+            row_off = self.row_offset.detach().cpu().numpy()
+        else:
+            row_off = np.zeros(U_hat.shape[0], dtype=np.float32)
+        if hasattr(self, "col_offset") and isinstance(self.col_offset, torch.Tensor):
+            col_off = self.col_offset.detach().cpu().numpy()
+        else:
+            col_off = np.zeros(V_hat.shape[0], dtype=np.float32)
+        self.W = np.column_stack([row_off, np.ones_like(row_off)])
+        self.Z = np.column_stack([np.ones_like(col_off), col_off])
         
         QU, RU = torch.linalg.qr(U_hat, mode="reduced")
         QV, RV = torch.linalg.qr(V_hat, mode="reduced")
