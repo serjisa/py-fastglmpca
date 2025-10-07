@@ -261,7 +261,26 @@ class PoissonGLMPCA:
                 hess_diag_k = torch.clamp(-hess_diag_k, max=-1e-8)
                 direction = grad_k / hess_diag_k
                 
-                LL[k, :] = LL[k, :] - self.learning_rate * direction
+                if self.line_search:
+                    prev_loglik = self._poisson_log_likelihood(Y, LL, FF)
+                    alpha = self.learning_rate
+                    accepted = False
+                    for _ in range(self.ls_max_steps):
+                        LL_candidate = LL.clone()
+                        LL_candidate[k, :] = LL[k, :] - alpha * direction
+                        new_loglik = self._poisson_log_likelihood(Y, LL_candidate, FF)
+                        if torch.isnan(new_loglik):
+                            alpha *= self.ls_beta
+                            continue
+                        if new_loglik >= prev_loglik:
+                            LL = LL_candidate
+                            accepted = True
+                            break
+                        alpha *= self.ls_beta
+                    if not accepted:
+                        pass
+                else:
+                    LL[k, :] = LL[k, :] - self.learning_rate * direction
         
         return LL
 
@@ -306,7 +325,26 @@ class PoissonGLMPCA:
                 hess_diag_k = torch.clamp(-hess_diag_k, max=-1e-8)
                 direction = grad_k / hess_diag_k
                 
-                FF[k, :] = FF[k, :] - self.learning_rate * direction
+                if self.line_search:
+                    prev_loglik = self._poisson_log_likelihood(Y, LL, FF)
+                    alpha = self.learning_rate
+                    accepted = False
+                    for _ in range(self.ls_max_steps):
+                        FF_candidate = FF.clone()
+                        FF_candidate[k, :] = FF[k, :] - alpha * direction
+                        new_loglik = self._poisson_log_likelihood(Y, LL, FF_candidate)
+                        if torch.isnan(new_loglik):
+                            alpha *= self.ls_beta
+                            continue
+                        if new_loglik >= prev_loglik:
+                            FF = FF_candidate
+                            accepted = True
+                            break
+                        alpha *= self.ls_beta
+                    if not accepted:
+                        pass
+                else:
+                    FF[k, :] = FF[k, :] - self.learning_rate * direction
         
         return FF
 
