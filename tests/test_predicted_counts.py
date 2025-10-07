@@ -51,6 +51,8 @@ def test_predicted_counts_dense_offsets_modes(col_size_factor, row_intercept):
     model.fit(Y, init="svd")
 
     Y_hat = _predict_counts(model)
+    if sp.issparse(Y_hat):
+        Y_hat = Y_hat.toarray()
     y = Y.flatten()
     yhat = Y_hat.flatten()
     corr = np.corrcoef(y, yhat)[0, 1]
@@ -86,6 +88,8 @@ def test_predicted_counts_sparse_offsets_modes(col_size_factor, row_intercept):
     model.fit(Y_sp, init="svd")
 
     Y_hat = _predict_counts(model)
+    if sp.issparse(Y_hat):
+        Y_hat = Y_hat.toarray()
     y = Y_sp.toarray().flatten()
     yhat = Y_hat.flatten()
     corr = np.corrcoef(y, yhat)[0, 1]
@@ -100,6 +104,8 @@ def test_predicted_counts_dense_deviation():
     model.fit(Y, init="svd")
 
     Y_hat = _predict_counts(model)
+    if sp.issparse(Y_hat):
+        Y_hat = Y_hat.toarray()
     y = Y.flatten()
     yhat = Y_hat.flatten()
     corr = np.corrcoef(y, yhat)[0, 1]
@@ -115,6 +121,8 @@ def test_predicted_counts_sparse_deviation():
     model.fit(Y_sp, init="svd")
 
     Y_hat = _predict_counts(model)
+    if sp.issparse(Y_hat):
+        Y_hat = Y_hat.toarray()
     y = Y_sp.toarray().flatten()
     yhat = Y_hat.flatten()
     corr = np.corrcoef(y, yhat)[0, 1]
