@@ -450,6 +450,24 @@ class PoissonGLMPCA:
         else:
             Y = Y.to(self.device)
 
+        # Validate integer-like counts (values may be float but must represent integers)
+        tol_int = 1e-6
+        if self.is_sparse:
+            try:
+                Yc = Y.coalesce()
+                vals = Yc.values() if hasattr(Yc, "values") else Y._values()
+            except Exception:
+                vals = Y._values()
+            if vals.numel() > 0:
+                frac_dev = torch.abs(vals - torch.round(vals))
+                if torch.any(frac_dev > tol_int):
+                    raise ValueError("Input count matrix must consist of integers; found non-integer values in sparse data.")
+        else:
+            if Y.numel() > 0:
+                frac_dev = torch.abs(Y - torch.round(Y))
+                if torch.any(frac_dev > tol_int):
+                    raise ValueError("Input count matrix must consist of integers; found non-integer values in dense data.")
+
         self.row_offset = torch.zeros(Y.shape[0], device=self.device)
         self.col_offset = torch.zeros(Y.shape[1], device=self.device)
         epsilon = 1e-8

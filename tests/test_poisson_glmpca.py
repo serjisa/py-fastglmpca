@@ -212,3 +212,21 @@ def test_fit_sparse_outputs_random_init():
     assert model.U.shape == (Y_sparse.shape[0], model.n_pcs)
     assert model.V.shape == (Y_sparse.shape[1], model.n_pcs)
     assert model.d.shape == (model.n_pcs,)
+
+
+def test_fit_dense_non_integer_raises():
+    Y = make_dense_data(n=10, m=8, rate=1.2, seed=3).astype(np.float32)
+    Y[0, 0] = 1.5 
+    model = PoissonGLMPCA(n_pcs=2, device="cpu", progress_bar=False, verbose=False, seed=3)
+    with pytest.raises(ValueError):
+        model.fit(Y, init="svd")
+
+
+def test_fit_sparse_non_integer_raises():
+    Y = make_dense_data(n=10, m=8, rate=1.2, seed=4).astype(np.float32)
+    Y[Y < 1] = 0.0
+    Y[1, 1] = 2.7
+    Y_sparse = sp.coo_matrix(Y)
+    model = PoissonGLMPCA(n_pcs=2, device="cpu", progress_bar=False, verbose=False, seed=4)
+    with pytest.raises(ValueError):
+        model.fit(Y_sparse, init="random")
