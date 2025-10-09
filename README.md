@@ -8,8 +8,7 @@ Python implementation of `fastglmpca` ([Weine et al., Bioinformatics, 2024](http
 
 The main concept of `fastglmpca` is to use a fast iterative algorithm ("Alternative Poisson Regression") to find a low-rank approximation of the input matrix `X` with a Poisson distribution. It might be used for dimensionality reduction of count data matrices (e.g. scRNA-Seq UMI matrices or nearest neighbours count matrices in Skip-Gram like representations).
 
-The original R package is available at [GitHub](https://github.com/stephenslab/fastglmpca), this Python package is **not** an official implementation. In contrast to the original implementation, we don't use line
-search and instead use a constant learning rate.
+The original R package is available at [GitHub](https://github.com/stephenslab/fastglmpca), this Python package is **not** an official implementation that was tested in the [paper](https://doi.org/10.1093/bioinformatics/btae494). In contrast to the original implementation, we don't use line search and instead use a constant learning rate.
 
 ## Installation
 
@@ -29,7 +28,7 @@ pip install git+https://github.com/serjisa/py-fastglmpca
 ```python
 import fastglmpca
 
-Z = fastglmpca.poisson(X, n_pcs=10)
+X_poipca = fastglmpca.poisson(X, n_pcs=10)
 ```
 
 Example with scRNA-Seq dataset processing is available in [this notebook](https://github.com/serjisa/fastglmpca/blob/main/examples/scRNA-Seq.ipynb).
