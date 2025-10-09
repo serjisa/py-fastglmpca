@@ -1,4 +1,4 @@
-# fastglmpca
+# py-fastglmpca
 
 ![Tests](https://github.com/serjisa/fastglmpca/actions/workflows/tests.yml/badge.svg)
 ![PyPI](https://img.shields.io/pypi/v/fastglmpca)
@@ -19,7 +19,7 @@ pip install fastglmpca
 ```
 or the latest development version can be installed from GitHub using:
 ```bash
-pip install git+https://github.com/serjisa/fastglmpca
+pip install git+https://github.com/serjisa/py-fastglmpca
 ```
 
 ## Quck start
