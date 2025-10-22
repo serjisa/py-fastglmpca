@@ -247,7 +247,7 @@ class PoissonGLMPCA:
             
             term1 = term1_total
             term2 = term2_total
-
+        
         return term1 - term2
 
     def _update_LL_batch(
@@ -528,11 +528,11 @@ class PoissonGLMPCA:
                 iterator.set_postfix(loglik=f"{loglik:.4f}", delta=f"{delta:.2e}")
 
             if delta < self.tol:
-                if self.verbose or self.progress_bar:
+                if self.verbose:
                     print(f"\nConvergence reached after {i+1} iterations.")
                 break
         
-        if i == self.max_iter - 1 and (self.verbose or self.progress_bar):
+        if i == self.max_iter - 1:
             warnings.warn(f"\nMaximum iterations ({self.max_iter}) reached without convergence.")
             
         self._finalize_factors(LL, FF)
@@ -645,3 +645,144 @@ class PoissonGLMPCA:
                 low, high = (-float(clip), float(clip))
             Z = np.clip(Z, low, high)
         return np.exp(Z)
+
+    def project(
+        self,
+        Y_new,
+        max_iter: int | None = None,
+        tol: float | None = None,
+        progress_bar: bool | None = None,
+        init: Literal["svd", "random"] = "svd",
+    ) -> np.ndarray:
+        """
+        Project new samples onto the existing GLM-PCA model by optimizing their
+        factors (LL) with fixed loadings (FF).
+
+        Parameters
+        ----------
+        Y_new : array-like, torch.Tensor, or scipy.sparse matrix
+            New count matrix of shape (n_new, n_features). Must have same number
+            of features as the fitted model.
+        max_iter : int or None, optional
+            Maximum iterations for CCD during projection. Defaults to `self.max_iter`.
+        tol : float or None, optional
+            Relative improvement tolerance to stop early. Defaults to `self.tol`.
+        progress_bar : bool or None, optional
+            Whether to show iteration progress. Defaults to `self.progress_bar`.
+        init : Literal["svd", "random"], optional
+            Initialization for LL. "svd" uses log1p(Y_new) projection onto the
+            model's orthonormal loadings V (with scaling by 1/d); "random"
+            starts from small Gaussian noise. Default is "svd".
+
+        Returns
+        -------
+        np.ndarray
+            Array of shape (n_new, K) with sample scores U_new.
+        """
+        if not (hasattr(self, "V") and hasattr(self, "d") and hasattr(self, "col_offset")):
+            raise RuntimeError("Model must be fitted before calling project.")
+
+        local_is_sparse = False
+        if sp.issparse(Y_new):
+            local_is_sparse = True
+            coo = Y_new.tocoo()
+            indices = torch.LongTensor(np.vstack((coo.row, coo.col)))
+            values = torch.FloatTensor(coo.data)
+            shape = torch.Size(coo.shape)
+            Y_t = torch.sparse_coo_tensor(indices, values, shape, dtype=torch.float32).to(self.device)
+        elif not isinstance(Y_new, torch.Tensor):
+            Y_t = torch.tensor(Y_new, dtype=torch.float32, device=self.device)
+        else:
+            Y_t = Y_new.to(self.device)
+
+        n_new, m_new = Y_t.shape
+        m_model = int(self.V.shape[0])
+        if m_new != m_model:
+            raise ValueError(
+                f"Feature dimension mismatch: new data has {m_new}, model expects {m_model}."
+            )
+
+        tol_int = 1e-6
+        if local_is_sparse:
+            try:
+                Yc = Y_t.coalesce()
+                vals = Yc.values() if hasattr(Yc, "values") else Y_t._values()
+            except Exception:
+                vals = Y_t._values()
+            if vals.numel() > 0:
+                frac_dev = torch.abs(vals - torch.round(vals))
+                if torch.any(frac_dev > tol_int):
+                    raise ValueError("Input count matrix must be integer-like; found non-integer values in sparse data.")
+        else:
+            if Y_t.numel() > 0:
+                frac_dev = torch.abs(Y_t - torch.round(Y_t))
+                if torch.any(frac_dev > tol_int):
+                    raise ValueError("Input count matrix must be integer-like; found non-integer values in dense data.")
+
+        V_t = torch.tensor(self.V, dtype=torch.float32, device=self.device)
+        d_t = torch.tensor(self.d, dtype=torch.float32, device=self.device)
+        FF_fixed = (d_t.unsqueeze(1) * V_t.T)
+
+        epsilon = 1e-8
+        col_off_t = self.col_offset.to(self.device) if isinstance(self.col_offset, torch.Tensor) else torch.tensor(self.col_offset, dtype=torch.float32, device=self.device)
+        if self.row_intercept:
+            if local_is_sparse:
+                row_sums = torch.sparse.sum(Y_t, dim=1).to_dense()
+            else:
+                row_sums = Y_t.sum(dim=1)
+            sum_col_means = torch.sum(torch.exp(col_off_t))
+            row_off_t = torch.log(row_sums / (sum_col_means + epsilon) + epsilon)
+        else:
+            row_off_t = torch.zeros(n_new, dtype=torch.float32, device=self.device)
+
+        K = self.n_pcs
+        if init not in ["svd", "random"]:
+            warnings.warn("Initialization method must be 'svd' or 'random'. Using 'svd' instead.")
+            init = "svd"
+
+        if init == "svd":
+            if local_is_sparse:
+                S = torch.sparse.mm(torch.log1p(Y_t), V_t)
+            else:
+                S = torch.log1p(Y_t) @ V_t
+
+            V_sum = V_t.sum(dim=0)
+            c_proj = col_off_t @ V_t
+            U_init = S - row_off_t.unsqueeze(1) * V_sum - c_proj.unsqueeze(0)
+            U_init = U_init / (d_t + 1e-8)
+            LL = U_init.T
+        else:
+            LL = torch.randn(K, n_new, device=self.device) * 1e-4
+        
+        old_is_sparse = getattr(self, "is_sparse", False)
+        self.is_sparse = local_is_sparse
+
+        old_row_off = getattr(self, "row_offset", None)
+        old_col_off = getattr(self, "col_offset", None)
+        self.row_offset = row_off_t
+        self.col_offset = col_off_t
+
+        iters = max_iter if max_iter is not None else self.max_iter
+        tol_use = tol if tol is not None else self.tol
+        show_bar = progress_bar if progress_bar is not None else self.progress_bar
+        iterator = tqdm(range(iters), desc="Project (opt LL)") if show_bar else range(iters)
+
+        prev_ll = self._poisson_log_likelihood(Y_t, LL, FF_fixed).item()
+        for i in iterator:
+            LL = self._update_LL_batch(Y_t, LL, FF_fixed)
+            cur_ll = self._poisson_log_likelihood(Y_t, LL, FF_fixed).item()
+            delta = abs((cur_ll - prev_ll) / (abs(prev_ll) + 1e-6))
+            if show_bar:
+                if isinstance(iterator, tqdm):
+                    iterator.set_postfix(delta=f"{delta:.2e}", loglik=f"{cur_ll:.4f}")
+            if delta < tol_use:
+                break
+            prev_ll = cur_ll
+
+        self.row_offset = old_row_off if old_row_off is not None else self.row_offset
+        self.col_offset = old_col_off if old_col_off is not None else self.col_offset
+        self.is_sparse = old_is_sparse
+
+        U_new = LL.T.detach().cpu().numpy()
+
+        return U_new

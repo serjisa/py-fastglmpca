@@ -230,3 +230,178 @@ def test_fit_sparse_non_integer_raises():
     model = PoissonGLMPCA(n_pcs=2, device="cpu", progress_bar=False, verbose=False, seed=4)
     with pytest.raises(ValueError):
         model.fit(Y_sparse, init="random")
+
+
+def test_col_size_factor_dense_sets_col_offset_only():
+    Y = np.array([[1, 2, 3, 4],
+                  [0, 1, 0, 2],
+                  [5, 0, 1, 0]], dtype=np.float32)
+    n, m = Y.shape
+    eps = 1e-8
+
+    model = PoissonGLMPCA(n_pcs=2, device="cpu", progress_bar=False, verbose=False, seed=11,
+                          col_size_factor=True, row_intercept=False)
+    model.fit(Y, init="svd")
+
+    col_means = Y.mean(axis=0)
+    expected_col_off = np.log(col_means + eps)
+
+    got_col_off = model.col_offset.detach().cpu().numpy()
+    got_row_off = model.row_offset.detach().cpu().numpy()
+
+    assert np.allclose(got_col_off, expected_col_off, atol=1e-6, rtol=1e-6)
+    assert np.allclose(got_row_off, np.zeros(n, dtype=np.float32), atol=1e-7)
+
+
+def test_row_intercept_dense_sets_row_offset_only():
+    Y = np.array([[2, 0, 1],
+                  [0, 3, 0],
+                  [1, 1, 1]], dtype=np.float32)
+    n, m = Y.shape
+    eps = 1e-8
+
+    model = PoissonGLMPCA(n_pcs=2, device="cpu", progress_bar=False, verbose=False, seed=12,
+                          col_size_factor=False, row_intercept=True)
+    model.fit(Y, init="svd")
+
+    sum_col_means = Y.mean(axis=0).sum()
+    row_sums = Y.sum(axis=1)
+    expected_row_off = np.log(row_sums / (sum_col_means + eps) + eps)
+
+    got_col_off = model.col_offset.detach().cpu().numpy()
+    got_row_off = model.row_offset.detach().cpu().numpy()
+
+    assert np.allclose(got_row_off, expected_row_off, atol=1e-6, rtol=1e-6)
+    assert np.allclose(got_col_off, np.zeros(m, dtype=np.float32), atol=1e-7)
+
+
+def test_col_size_factor_sparse_sets_col_offset_only():
+    Y_dense = np.array([[1, 0, 2, 0],
+                        [0, 3, 0, 1],
+                        [4, 0, 0, 2]], dtype=np.float32)
+    Y = sp.coo_matrix(Y_dense)
+    n, m = Y.shape
+    eps = 1e-8
+
+    model = PoissonGLMPCA(n_pcs=2, device="cpu", progress_bar=False, verbose=False, seed=13,
+                          col_size_factor=True, row_intercept=False)
+    model.fit(Y, init="svd")
+
+    col_means = Y_dense.mean(axis=0)
+    expected_col_off = np.log(col_means + eps)
+
+    got_col_off = model.col_offset.detach().cpu().numpy()
+    got_row_off = model.row_offset.detach().cpu().numpy()
+
+    assert np.allclose(got_col_off, expected_col_off, atol=1e-6, rtol=1e-6)
+    assert np.allclose(got_row_off, np.zeros(n, dtype=np.float32), atol=1e-7)
+
+
+def test_row_intercept_sparse_sets_row_offset_only():
+    Y_dense = np.array([[0, 1, 0],
+                        [2, 0, 2],
+                        [0, 3, 0]], dtype=np.float32)
+    Y = sp.coo_matrix(Y_dense)
+    n, m = Y.shape
+    eps = 1e-8
+
+    model = PoissonGLMPCA(n_pcs=2, device="cpu", progress_bar=False, verbose=False, seed=14,
+                          col_size_factor=False, row_intercept=True)
+    model.fit(Y, init="svd")
+
+    sum_col_means = Y_dense.mean(axis=0).sum()
+    row_sums = Y_dense.sum(axis=1)
+    expected_row_off = np.log(row_sums / (sum_col_means + eps) + eps)
+
+    got_col_off = model.col_offset.detach().cpu().numpy()
+    got_row_off = model.row_offset.detach().cpu().numpy()
+
+    assert np.allclose(got_row_off, expected_row_off, atol=1e-6, rtol=1e-6)
+    assert np.allclose(got_col_off, np.zeros(m, dtype=np.float32), atol=1e-7)
+
+
+def _synthetic_with_offsets(n=60, m=50, K=3, seed=731, clip=2.0, scale=8.0):
+    rng = np.random.default_rng(seed)
+    # Orthonormal base factors
+    U_rand = rng.normal(0.0, 1.0, size=(n, K)).astype(np.float32)
+    V_rand = rng.normal(0.0, 1.0, size=(m, K)).astype(np.float32)
+    # Orthonormalize columns via QR
+    Uq, _ = np.linalg.qr(U_rand)
+    Vq, _ = np.linalg.qr(V_rand)
+    d_true = rng.uniform(1.0, 2.0, size=(K,)).astype(np.float32)
+
+    # True linear predictor components
+    Z_true = Uq @ np.diag(d_true) @ Vq.T
+
+    # Row and column offsets
+    row_off_true = rng.normal(0.0, 0.5, size=(n,)).astype(np.float32)
+    col_off_true = rng.normal(0.0, 0.5, size=(m,)).astype(np.float32)
+
+    Z = Z_true + row_off_true[:, None] + col_off_true[None, :]
+    Z = np.clip(Z, -float(clip), float(clip))
+    lam = np.exp(Z) * float(scale)
+    Y = rng.poisson(lam).astype(np.float32)
+    return Y, Z_true.astype(np.float32), row_off_true, col_off_true, d_true.astype(np.float32)
+
+
+def _linear_predictor(model):
+    U = model.U.astype(np.float32)
+    V = model.V.astype(np.float32)
+    d = model.d.astype(np.float32)
+    Z_factors = U @ np.diag(d) @ V.T
+    # row_offset and col_offset may be torch tensors
+    if hasattr(model.row_offset, "detach"):
+        r_off = model.row_offset.detach().cpu().numpy().astype(np.float32)
+    else:
+        r_off = np.asarray(model.row_offset, dtype=np.float32)
+    if hasattr(model.col_offset, "detach"):
+        c_off = model.col_offset.detach().cpu().numpy().astype(np.float32)
+    else:
+        c_off = np.asarray(model.col_offset, dtype=np.float32)
+    return Z_factors + r_off[:, None] + c_off[None, :]
+
+
+def _factor_product(model):
+    U = model.U.astype(np.float32)
+    V = model.V.astype(np.float32)
+    d = model.d.astype(np.float32)
+    return U @ np.diag(d) @ V.T
+
+
+import pytest
+
+@pytest.mark.parametrize(
+    "col_size_factor,row_intercept",
+    [
+        (True, True),
+        (True, False),
+        (False, True),
+        (False, False),
+    ],
+)
+def test_fitted_factors_align_with_expected_under_flag_modes(col_size_factor, row_intercept):
+    Y, Z_true, row_off_true, col_off_true, d_true = _synthetic_with_offsets(n=70, m=55, K=3, seed=732, clip=2.0, scale=10.0)
+
+    model = PoissonGLMPCA(
+        n_pcs=3,
+        max_iter=180,
+        tol=1e-7,
+        device="cpu",
+        progress_bar=False,
+        verbose=False,
+        seed=732,
+        num_ccd_iter=5,
+        col_size_factor=col_size_factor,
+        row_intercept=row_intercept,
+    )
+    model.fit(Y, init="svd")
+
+    Z_model = _factor_product(model)
+    LP_model = _linear_predictor(model)
+    LP_target = Z_true + row_off_true[:, None] + col_off_true[None, :]
+    
+    lp_model_flat = LP_model.flatten()
+    lp_target_flat = LP_target.flatten()
+    lp_corr = np.corrcoef(lp_model_flat, lp_target_flat)[0, 1]
+    assert np.isfinite(lp_corr)
+    assert lp_corr >= 0.85
