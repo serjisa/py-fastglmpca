@@ -6,7 +6,7 @@ if TYPE_CHECKING:
     import numpy as np
 
 # Public API for the fastglmpca package
-__version__ = "0.0.4"
+__version__ = "0.1.0"
 __all__ = ["poisson", "PoissonGLMPCA", "__version__"]
 
 def __dir__():
