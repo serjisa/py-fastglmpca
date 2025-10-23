@@ -38,7 +38,7 @@ X_PoiPCA = model.U
 Y_PoiPCA = model.project(Y)
 ```
 
-Example with scRNA-Seq dataset processing is available in [this notebook](https://github.com/serjisa/fastglmpca/blob/main/examples/scRNA-Seq.ipynb).
+Examples with scRNA-Seq dataset processing are available in [this](https://github.com/serjisa/fastglmpca/blob/main/examples/scRNA-Seq.ipynb) and [this](https://github.com/serjisa/py-fastglmpca/blob/main/examples/Coordinates_projection.ipynb) notebooks.
 
 ## API
 
