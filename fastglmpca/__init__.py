@@ -1,8 +1,16 @@
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from .utils import PoissonGLMPCA
-import numpy as np
 
+if TYPE_CHECKING:
+    import numpy as np
+
+# Public API for the fastglmpca package
 __version__ = "0.0.4"
+__all__ = ["poisson", "PoissonGLMPCA", "__version__"]
+
+def __dir__():
+    return __all__
 
 def poisson(
     X,
@@ -21,7 +29,11 @@ def poisson(
     batch_size_rows: int | None = None,
     batch_size_cols: int | None = None,
     init: str = "svd",
-) -> np.ndarray | PoissonGLMPCA:
+    adaptive_lr: bool = True,
+    lr_decay: float = 0.5,
+    min_learning_rate: float = 1e-5,
+    max_backtracks: int = 3,
+) -> PoissonGLMPCA | "np.ndarray":
     """
     Fit a Poisson GLM-PCA model to the input data.
 
@@ -60,10 +72,18 @@ def poisson(
         Batch size for column updates. If None, uses max(1, min(n_samples, 1024)). Default is None.
     init : str, optional
         Initialization method for the model. Can be "svd" or "random". Default is "svd".
+    adaptive_lr : bool, optional
+        Whether to use adaptive learning rate. Default is True.
+    lr_decay : float, optional
+        Decay factor for learning rate. Default is 0.5.
+    min_learning_rate : float, optional
+        Minimum learning rate. Default is 1e-5.
+    max_backtracks : int, optional
+        Maximum number of backtracks for line search. Default is 3.
 
     Returns
     -------
-    np.ndarray or PoissonGLMPCA
+    PoissonGLMPCA or numpy.ndarray
         If return_model is True, returns the fitted Poisson GLM-PCA model.
         If return_model is False, returns the principal components (U) as a numpy array.
     """
@@ -82,6 +102,10 @@ def poisson(
         batch_size_cols=batch_size_cols,
         learning_rate=learning_rate,
         num_ccd_iter=num_ccd_iter,
+        adaptive_lr=adaptive_lr,
+        lr_decay=lr_decay,
+        min_learning_rate=min_learning_rate,
+        max_backtracks=max_backtracks,
     )
 
     model.fit(

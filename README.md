@@ -8,7 +8,7 @@ Python implementation of `fastglmpca` ([Weine et al., Bioinformatics, 2024](http
 
 The main concept of `fastglmpca` is to use a fast iterative algorithm ("Alternative Poisson Regression") to find a low-rank approximation of the input matrix `X` with a Poisson distribution. It might be used for dimensionality reduction of count data matrices (e.g. scRNA-Seq UMI matrices or nearest neighbours count matrices in Skip-Gram like representations).
 
-The original R package is available at [GitHub](https://github.com/stephenslab/fastglmpca), this Python package is **not** an official implementation that was tested in the [paper](https://doi.org/10.1093/bioinformatics/btae494). In contrast to the original implementation, we don't use line search and instead use a constant learning rate.
+The original R package is available at [GitHub](https://github.com/stephenslab/fastglmpca), this Python package is **not** an official implementation that was tested in the [paper](https://doi.org/10.1093/bioinformatics/btae494). In contrast to the original implementation, we don't use line search and instead use adaptive learning rate with backtracking.
 
 ## Installation
 
@@ -28,7 +28,14 @@ pip install git+https://github.com/serjisa/py-fastglmpca
 ```python
 import fastglmpca
 
-X_poipca = fastglmpca.poisson(X, n_pcs=10)
+# Fitting the model
+model = fastglmpca.poisson(X, n_pcs=10, return_model=True)
+X_PoiPCA = model.U
+# Alternatively, you can run
+# X_PoiPCA = fastglmpca.poisson(X, n_pcs=10)
+
+# Fitting new data to existing model
+Y_PoiPCA = model.project(Y)
 ```
 
 Example with scRNA-Seq dataset processing is available in [this notebook](https://github.com/serjisa/fastglmpca/blob/main/examples/scRNA-Seq.ipynb).
@@ -70,3 +77,11 @@ Function `fastglmpca.poisson` has the following parameters:
     Number of columns for batched computations of expectation terms; tunes memory vs speed. Default uses an adaptive value up to 1024.
 - `init` : str, optional
     Initialization method for factor matrices. `'svd'` (default) uses SVD on `log1p(X)` to produce a strong starting point. `'random'` uses small Gaussian noise for LL and FF which can be useful for stress-testing convergence or avoiding SVD costs on extremely large inputs.
+- `adaptive_lr` : bool, optional
+    Whether to use adaptive learning rate with backtracking. Default is True.
+- `lr_decay` : float, optional
+    Decay factor for learning rate. Default is 0.5.
+- `min_learning_rate` : float, optional
+    Minimum learning rate. Default is 1e-5.
+- `max_backtracks` : int, optional
+    Maximum number of backtracks for line search. Default is 3.

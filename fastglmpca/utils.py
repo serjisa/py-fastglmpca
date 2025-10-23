@@ -6,6 +6,7 @@ import warnings
 from tqdm import tqdm
 import scipy.sparse as sp
 from scipy.sparse.linalg import svds
+import math
 
 
 class PoissonGLMPCA:
@@ -29,6 +30,10 @@ class PoissonGLMPCA:
         batch_size_cols: int | None = None,
         learning_rate: float = 0.5,
         num_ccd_iter: int = 3,
+        adaptive_lr: bool = True,
+        lr_decay: float = 0.5,
+        min_learning_rate: float = 1e-5,
+        max_backtracks: int = 3,
     ):
         """
         Initialize the Poisson GLM-PCA model.
@@ -62,6 +67,14 @@ class PoissonGLMPCA:
             Batch size for column updates. If None, uses max(1, min(n_samples, 1024)). Default is None.
         learning_rate : float, optional
             Step size used in updates. Default is 0.5.
+        adaptive_lr : bool, optional
+            If True, reduce learning rate on log-likelihood drops. Default is True.
+        lr_decay : float, optional
+            Multiplicative decay factor applied when log-likelihood decreases. Default is 0.5.
+        min_learning_rate : float, optional
+            Minimum allowed learning rate during adaptation. Default is 1e-5.
+        max_backtracks : int, optional
+            Maximum number of backtracking retries per iteration when log-likelihood decreases. Default is 3.
         """
         
         if n_pcs < 1:
@@ -80,6 +93,10 @@ class PoissonGLMPCA:
         self.batch_size_rows = batch_size_rows
         self.batch_size_cols = batch_size_cols
         self.num_ccd_iter = num_ccd_iter
+        self.adaptive_lr = adaptive_lr
+        self.lr_decay = lr_decay
+        self.min_learning_rate = min_learning_rate
+        self.max_backtracks = max_backtracks
 
         
         if self.seed:
@@ -164,6 +181,74 @@ class PoissonGLMPCA:
 
             LL = (U_k * torch.sqrt(d_k)).T
             FF = (V_k * torch.sqrt(d_k)).T
+            
+            # Scaled SVD initialization: find alpha so var(exp(alpha * Xhat)) ≈ var(Y)
+            try:
+                n, m = Y.shape
+                nm = float(n * m)
+                # Compute variance of Y efficiently (handles sparse and dense)
+                if hasattr(self, "is_sparse") and self.is_sparse:
+                    try:
+                        Yc = Y.coalesce()
+                        vals = Yc.values() if hasattr(Yc, "values") else Y._values()
+                    except Exception:
+                        vals = Y._values()
+                    total_sum = vals.sum()
+                    sumsq = (vals * vals).sum()
+                    mu_y = total_sum / nm
+                    var_y = (sumsq / nm) - (mu_y * mu_y)
+                else:
+                    var_y = torch.var(Y, unbiased=False)
+                var_y = torch.clamp(var_y, min=1e-12)
+                
+                clamp_min, clamp_max = -20.0, 20.0
+                bsz = self.batch_size_rows or max(1, min(n, 1024))
+                
+                def _var_exp_alpha(alpha: float) -> torch.Tensor:
+                    total_exp = torch.tensor(0.0, device=self.device)
+                    total_exp_sq = torch.tensor(0.0, device=self.device)
+                    a = torch.tensor(alpha, dtype=torch.float32, device=self.device)
+                    for start in range(0, n, bsz):
+                        end = min(n, start + bsz)
+                        LL_b = LL[:, start:end]
+                        Z = LL_b.T @ FF
+                        Z = torch.clamp(Z, clamp_min, clamp_max)
+                        EZ = torch.exp(a * Z)
+                        total_exp = total_exp + EZ.sum()
+                        total_exp_sq = total_exp_sq + (EZ * EZ).sum()
+                    mu_e = total_exp / nm
+                    var_e = (total_exp_sq / nm) - (mu_e * mu_e)
+                    return var_e
+                
+                target = var_y
+                alpha_low = 0.0
+                alpha_high = 1.0
+                var_high = _var_exp_alpha(alpha_high)
+                max_alpha = 64.0
+                # Expand alpha_high until we bracket the target or hit max_alpha
+                expand_iters = 0
+                while var_high < target and alpha_high < max_alpha and expand_iters < 8:
+                    alpha_high *= 2.0
+                    var_high = _var_exp_alpha(alpha_high)
+                    expand_iters += 1
+                # Binary search between alpha_low and alpha_high
+                alpha = alpha_high
+                if alpha_high > 0.0:
+                    for _ in range(10):
+                        mid = 0.5 * (alpha_low + alpha_high)
+                        var_mid = _var_exp_alpha(mid)
+                        if var_mid < target:
+                            alpha_low = mid
+                        else:
+                            alpha_high = mid
+                    alpha = alpha_high
+                # Scale LL and FF so that LL^T FF is multiplied by alpha
+                scale = torch.sqrt(torch.tensor(alpha, dtype=torch.float32, device=self.device))
+                LL = LL * scale
+                FF = FF
+            except Exception:
+                # If anything goes wrong, fall back to unscaled SVD init
+                pass
         else:
             LL = torch.randn(self.n_pcs, n, device=self.device) * 1e-4
             FF = torch.randn(self.n_pcs, m, device=self.device) * 1e-4
@@ -504,8 +589,14 @@ class PoissonGLMPCA:
 
         iterator = tqdm(range(self.max_iter), desc="GLM-PCA Iterations") if self.progress_bar else range(self.max_iter)
 
+        lr_start = self.learning_rate
         for i in iterator:
             prev_loglik = self.loglik_history_[-1]
+
+            # Save current state for potential rollback
+            LL_prev = LL.clone()
+            FF_prev = FF.clone()
+            lr_prev = self.learning_rate
 
             LL, FF = self._orthonormalize_factors(LL, FF)
             LL = self._update_LL_batch(Y, LL, FF)
@@ -514,18 +605,57 @@ class PoissonGLMPCA:
             FF = self._update_FF_batch(Y, LL, FF)
 
             loglik = self._poisson_log_likelihood(Y, LL, FF)
-            self.loglik_history_.append(loglik.item())
 
-            if torch.isnan(loglik):
-                warnings.warn(f"\nLog-likelihood is NaN at iteration {i+1}. Stopping.")
+            # If log-likelihood dropped, backtrack and reduce learning rate
+            if self.adaptive_lr and (loglik.item() < prev_loglik):
+                backtracks = 0
+                success = False
+                while backtracks < self.max_backtracks and self.learning_rate > self.min_learning_rate:
+                    backtracks += 1
+                    self.learning_rate = max(self.learning_rate * self.lr_decay, self.min_learning_rate)
+
+                    # rollback to previous state and re-apply updates with smaller lr
+                    LL = LL_prev.clone()
+                    FF = FF_prev.clone()
+
+                    LL, FF = self._orthonormalize_factors(LL, FF)
+                    LL = self._update_LL_batch(Y, LL, FF)
+
+                    FF, LL = self._orthonormalize_factors(FF, LL)
+                    FF = self._update_FF_batch(Y, LL, FF)
+
+                    new_loglik = self._poisson_log_likelihood(Y, LL, FF)
+                    if new_loglik.item() >= prev_loglik:
+                        loglik = new_loglik
+                        success = True
+                        break
+                if not success:
+                    # Could not recover improvement; keep the best of previous and current
+                    LL = LL_prev
+                    FF = FF_prev
+                    self.learning_rate = lr_prev * self.lr_decay
+                    loglik = prev_loglik
+
+            # Record log-likelihood value robustly for both tensors and floats
+            loglik_value = float(loglik.item() if hasattr(loglik, "item") else loglik)
+            self.loglik_history_.append(loglik_value)
+
+            # Robust NaN check for both tensors and floats
+            is_nan = False
+            if torch.is_tensor(loglik):
+                is_nan = torch.isnan(loglik)
+            else:
+                is_nan = math.isnan(float(loglik))
+            if is_nan:
+                warnings.warn("Encountered NaN in log-likelihood; stopping optimization.")
                 break
 
             delta = abs((loglik - prev_loglik) / (abs(prev_loglik) + 1e-6))
 
             if self.verbose:
-                print(f"Iter {i+1:3d} | Log-Likelihood: {loglik:.4f} | Change: {delta:.2e}")
+                print(f"Iter {i+1:3d} | Log-Likelihood: {loglik:.4f} | Change: {delta:.2e} | lr: {self.learning_rate:.3e}")
             if self.progress_bar:
-                iterator.set_postfix(loglik=f"{loglik:.4f}", delta=f"{delta:.2e}")
+                iterator.set_postfix(loglik=f"{loglik:.4f}", delta=f"{delta:.2e}", lr=f"{self.learning_rate:.2e}")
 
             if delta < self.tol:
                 if self.verbose:
@@ -535,6 +665,10 @@ class PoissonGLMPCA:
         if i == self.max_iter - 1:
             warnings.warn(f"\nMaximum iterations ({self.max_iter}) reached without convergence.")
             
+        # Reset learning rate to the initial value for future calls
+        # (in case adaptive backtracking modified it)
+        self.learning_rate = lr_start
+        
         self._finalize_factors(LL, FF)
         return self
 
@@ -767,17 +901,44 @@ class PoissonGLMPCA:
         show_bar = progress_bar if progress_bar is not None else self.progress_bar
         iterator = tqdm(range(iters), desc="Project (opt LL)") if show_bar else range(iters)
 
+        lr_start = self.learning_rate
         prev_ll = self._poisson_log_likelihood(Y_t, LL, FF_fixed).item()
         for i in iterator:
+            LL_prev = LL.clone()
+            lr_prev = self.learning_rate
+
             LL = self._update_LL_batch(Y_t, LL, FF_fixed)
             cur_ll = self._poisson_log_likelihood(Y_t, LL, FF_fixed).item()
+
+            if self.adaptive_lr and (cur_ll < prev_ll):
+                backtracks = 0
+                success = False
+                while backtracks < self.max_backtracks and self.learning_rate > self.min_learning_rate:
+                    backtracks += 1
+                    self.learning_rate = max(self.learning_rate * self.lr_decay, self.min_learning_rate)
+
+                    LL = LL_prev.clone()
+                    LL = self._update_LL_batch(Y_t, LL, FF_fixed)
+                    new_ll = self._poisson_log_likelihood(Y_t, LL, FF_fixed).item()
+                    if new_ll >= prev_ll:
+                        cur_ll = new_ll
+                        success = True
+                        break
+                if not success:
+                    LL = LL_prev
+                    self.learning_rate = lr_prev * self.lr_decay
+                    cur_ll = prev_ll
+
             delta = abs((cur_ll - prev_ll) / (abs(prev_ll) + 1e-6))
             if show_bar:
                 if isinstance(iterator, tqdm):
-                    iterator.set_postfix(delta=f"{delta:.2e}", loglik=f"{cur_ll:.4f}")
+                    iterator.set_postfix(delta=f"{delta:.2e}", loglik=f"{cur_ll:.4f}", lr=f"{self.learning_rate:.2e}")
             if delta < tol_use:
                 break
             prev_ll = cur_ll
+
+        # Reset learning rate to the value at start of projection
+        self.learning_rate = lr_start
 
         self.row_offset = old_row_off if old_row_off is not None else self.row_offset
         self.col_offset = old_col_off if old_col_off is not None else self.col_offset
