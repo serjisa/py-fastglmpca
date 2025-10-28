@@ -787,6 +787,7 @@ class PoissonGLMPCA:
         tol: float | None = None,
         progress_bar: bool | None = None,
         init: Literal["svd", "random"] = "svd",
+        seed: int | None = None,
     ) -> np.ndarray:
         """
         Project new samples onto the existing GLM-PCA model by optimizing their
@@ -807,6 +808,8 @@ class PoissonGLMPCA:
             Initialization for LL. "svd" uses log1p(Y_new) projection onto the
             model's orthonormal loadings V (with scaling by 1/d); "random"
             starts from small Gaussian noise. Default is "svd".
+        seed : int or None, optional
+            Random seed for reproducibility. Default is None.
 
         Returns
         -------
@@ -815,6 +818,10 @@ class PoissonGLMPCA:
         """
         if not (hasattr(self, "V") and hasattr(self, "d") and hasattr(self, "col_offset")):
             raise RuntimeError("Model must be fitted before calling project.")
+
+        if seed is not None:
+            torch.manual_seed(seed)
+            np.random.seed(seed)
 
         local_is_sparse = False
         if sp.issparse(Y_new):
