@@ -910,6 +910,8 @@ class PoissonGLMPCA:
 
         lr_start = self.learning_rate
         prev_ll = self._poisson_log_likelihood(Y_t, LL, FF_fixed).item()
+        self.project_loglik_history_ = [prev_ll]
+        
         for i in iterator:
             LL_prev = LL.clone()
             lr_prev = self.learning_rate
@@ -943,6 +945,7 @@ class PoissonGLMPCA:
             if delta < tol_use:
                 break
             prev_ll = cur_ll
+            self.project_loglik_history_.append(cur_ll)
 
         # Reset learning rate to the value at start of projection
         self.learning_rate = lr_start
