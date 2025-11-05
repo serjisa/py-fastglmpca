@@ -295,22 +295,39 @@ class PoissonGLMPCA:
             rows = idx[0]
             cols = idx[1]
 
-            LL_rows = LL[:, rows]
-            FF_cols = FF[:, cols]
-            dot_k = (LL_rows * FF_cols).sum(dim=0)
-            log_lambda_nnz = dot_k + self.row_offset[rows] + self.col_offset[cols]
-            log_lambda_nnz = torch.clamp(log_lambda_nnz, clamp_min, clamp_max)
-            term1 = torch.sum(vals * log_lambda_nnz)
+            # Compute contribution from nonzeros in chunks to avoid allocating (K x nnz)
+            term1 = torch.tensor(0.0, device=self.device)
+            nnz = vals.shape[0]
+            # Choose a chunk size that balances memory and throughput
+            # Default to 262144, but cap by nnz
+            bsz_nnz = 262144
+            for s in range(0, nnz, bsz_nnz):
+                e = min(nnz, s + bsz_nnz)
+                rr = rows[s:e]
+                cc = cols[s:e]
+                LL_rr = LL[:, rr]
+                FF_cc = FF[:, cc]
+                dot_k = (LL_rr * FF_cc).sum(dim=0)
+                log_lambda_chunk = dot_k + self.row_offset[rr] + self.col_offset[cc]
+                log_lambda_chunk = torch.clamp(log_lambda_chunk, clamp_min, clamp_max)
+                term1 = term1 + torch.sum(vals[s:e] * log_lambda_chunk)
 
+            # Dual-axis batching: accumulate exp(Z) over row and column chunks
             total = torch.tensor(0.0, device=self.device)
-            bsz = self.batch_size_rows or max(1, min(n, 1024))
-            for start in range(0, n, bsz):
-                end = min(n, start + bsz)
-                LL_b = LL[:, start:end]
-                Z = LL_b.T @ FF
-                Z = Z + self.row_offset[start:end].unsqueeze(1) + self.col_offset.unsqueeze(0)
-                Z = torch.clamp(Z, clamp_min, clamp_max)
-                total = total + torch.exp(Z).sum()
+            bszr = self.batch_size_rows or max(1, min(n, 1024))
+            bszc = self.batch_size_cols or max(1, min(m, 1024))
+            for rstart in range(0, n, bszr):
+                rend = min(n, rstart + bszr)
+                LL_b = LL[:, rstart:rend]
+                row_off_b = self.row_offset[rstart:rend]
+                for cstart in range(0, m, bszc):
+                    cend = min(m, cstart + bszc)
+                    FF_b = FF[:, cstart:cend]
+                    col_off_b = self.col_offset[cstart:cend]
+                    Z_block = LL_b.T @ FF_b
+                    Z_block = Z_block + row_off_b.unsqueeze(1) + col_off_b.unsqueeze(0)
+                    Z_block = torch.clamp(Z_block, clamp_min, clamp_max)
+                    total = total + torch.exp(Z_block).sum()
             term2 = total
             
         else:
@@ -375,16 +392,30 @@ class PoissonGLMPCA:
                 ff_k = FF[k, :]
                 ff_k_sq = ff_k * ff_k
                 
-                bsz = self.batch_size_rows or max(1, min(n, 1024))
-                for start in range(0, n, bsz):
-                    end = min(n, start + bsz)
-                    LL_b = LL[:, start:end]
-                    Z = LL_b.T @ FF
-                    Z = Z + self.row_offset[start:end].unsqueeze(1) + self.col_offset.unsqueeze(0)
-                    Z = torch.clamp(Z, clamp_min, clamp_max)
-                    Lambda_b = torch.exp(Z)
-                    exp_grad_k[start:end] = Lambda_b @ ff_k
-                    hess_diag_k[start:end] = Lambda_b @ ff_k_sq
+                # Dual-axis batching: iterate rows and columns to avoid large dense Z
+                bszr = self.batch_size_rows or max(1, min(n, 1024))
+                bszc = self.batch_size_cols or max(1, min(m, 1024))
+                for rstart in range(0, n, bszr):
+                    rend = min(n, rstart + bszr)
+                    LL_b = LL[:, rstart:rend]
+                    row_off_b = self.row_offset[rstart:rend]
+                    # Accumulators for the current row block
+                    acc_grad_block = torch.zeros(rend - rstart, device=self.device)
+                    acc_hess_block = torch.zeros(rend - rstart, device=self.device)
+                    for cstart in range(0, m, bszc):
+                        cend = min(m, cstart + bszc)
+                        FF_b = FF[:, cstart:cend]
+                        col_off_b = self.col_offset[cstart:cend]
+                        Z_block = LL_b.T @ FF_b
+                        Z_block = Z_block + row_off_b.unsqueeze(1) + col_off_b.unsqueeze(0)
+                        Z_block = torch.clamp(Z_block, clamp_min, clamp_max)
+                        Lambda_block = torch.exp(Z_block)
+                        ff_k_chunk = ff_k[cstart:cend]
+                        ff_k_sq_chunk = ff_k_sq[cstart:cend]
+                        acc_grad_block = acc_grad_block + (Lambda_block @ ff_k_chunk)
+                        acc_hess_block = acc_hess_block + (Lambda_block @ ff_k_sq_chunk)
+                    exp_grad_k[rstart:rend] = acc_grad_block
+                    hess_diag_k[rstart:rend] = acc_hess_block
                 
                 grad_k = y_ff_k - exp_grad_k
                 hess_diag_k = torch.clamp(-hess_diag_k, max=-1e-8)
@@ -434,16 +465,28 @@ class PoissonGLMPCA:
                 ll_k = LL[k, :]
                 ll_k_sq = ll_k * ll_k
                 
+                # Dual-axis batching: iterate columns and rows to avoid large dense Z
                 bszc = self.batch_size_cols or max(1, min(m, 1024))
-                for start in range(0, m, bszc):
-                    end = min(m, start + bszc)
-                    FF_b = FF[:, start:end]
-                    Z = LL.T @ FF_b
-                    Z = Z + self.row_offset.unsqueeze(1) + self.col_offset[start:end].unsqueeze(0)
-                    Z = torch.clamp(Z, clamp_min, clamp_max)
-                    Lambda_b = torch.exp(Z)
-                    exp_grad_k[start:end] = Lambda_b.T @ ll_k
-                    hess_diag_k[start:end] = Lambda_b.T @ ll_k_sq
+                bszr = self.batch_size_rows or max(1, min(n, 1024))
+                for cstart in range(0, m, bszc):
+                    cend = min(m, cstart + bszc)
+                    FF_b = FF[:, cstart:cend]
+                    col_off_b = self.col_offset[cstart:cend]
+                    # Accumulators for the current column block
+                    acc_grad_block = torch.zeros(cend - cstart, device=self.device)
+                    acc_hess_block = torch.zeros(cend - cstart, device=self.device)
+                    for rstart in range(0, n, bszr):
+                        rend = min(n, rstart + bszr)
+                        LL_b = LL[:, rstart:rend]
+                        row_off_b = self.row_offset[rstart:rend]
+                        Z_block = LL_b.T @ FF_b
+                        Z_block = Z_block + row_off_b.unsqueeze(1) + col_off_b.unsqueeze(0)
+                        Z_block = torch.clamp(Z_block, clamp_min, clamp_max)
+                        Lambda_block = torch.exp(Z_block)
+                        acc_grad_block = acc_grad_block + (Lambda_block.T @ ll_k[rstart:rend])
+                        acc_hess_block = acc_hess_block + (Lambda_block.T @ ll_k_sq[rstart:rend])
+                    exp_grad_k[cstart:cend] = acc_grad_block
+                    hess_diag_k[cstart:cend] = acc_hess_block
                 
                 grad_k = yT_ll_k - exp_grad_k
                 hess_diag_k = torch.clamp(-hess_diag_k, max=-1e-8)
