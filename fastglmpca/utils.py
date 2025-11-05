@@ -214,14 +214,27 @@ class PoissonGLMPCA:
                     total_exp = torch.tensor(0.0, device=self.device)
                     total_exp_sq = torch.tensor(0.0, device=self.device)
                     a = torch.tensor(alpha, dtype=torch.float32, device=self.device)
-                    for start in range(0, n, bsz):
-                        end = min(n, start + bsz)
-                        LL_b = LL[:, start:end]
-                        Z = LL_b.T @ FF
-                        Z = torch.clamp(Z, clamp_min, clamp_max)
-                        EZ = torch.exp(a * Z)
-                        total_exp = total_exp + EZ.sum()
-                        total_exp_sq = total_exp_sq + (EZ * EZ).sum()
+                    
+                    # Use established batch sizes
+                    bszr = self.batch_size_rows or max(1, min(n, 1024))
+                    bszc = self.batch_size_cols or max(1, min(m, 1024))
+
+                    for rstart in range(0, n, bszr):
+                        rend = min(n, rstart + bszr)
+                        LL_b = LL[:, rstart:rend]
+                        
+                        # Inner loop over columns to keep intermediate Z small
+                        for cstart in range(0, m, bszc):
+                            cend = min(m, cstart + bszc)
+                            FF_b = FF[:, cstart:cend]
+                            
+                            Z_block = LL_b.T @ FF_b
+                            Z_block = torch.clamp(Z_block, clamp_min, clamp_max)
+                            EZ_block = torch.exp(a * Z_block)
+                            
+                            total_exp = total_exp + EZ_block.sum()
+                            total_exp_sq = total_exp_sq + (EZ_block * EZ_block).sum()
+                            
                     mu_e = total_exp / nm
                     var_e = (total_exp_sq / nm) - (mu_e * mu_e)
                     return var_e
