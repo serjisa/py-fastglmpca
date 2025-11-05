@@ -28,6 +28,7 @@ class PoissonGLMPCA:
         seed: int | None = 42,
         batch_size_rows: int | None = None,
         batch_size_cols: int | None = None,
+        batch_size_nnz: int | None = None,
         learning_rate: float = 0.5,
         num_ccd_iter: int = 3,
         adaptive_lr: bool = True,
@@ -63,6 +64,9 @@ class PoissonGLMPCA:
             Number of coordinate descent iterations per main iteration. Default is 3.
         batch_size_rows : int or None, optional
             Batch size for row updates. If None, uses max(1, min(n_samples, 1024)). Default is None.
+        batch_size_nnz : int or None, optional
+            Batch size for iterating over nonzero entries in sparse log-likelihood. If None,
+            uses an adaptive default (131072 on GPU/MPS, 262144 on CPU). Default is None.
         batch_size_cols : int or None, optional
             Batch size for column updates. If None, uses max(1, min(n_samples, 1024)). Default is None.
         learning_rate : float, optional
@@ -121,6 +125,7 @@ class PoissonGLMPCA:
                 warnings.warn("MPS device is not available. Using 'cpu' instead.")
                 device = "cpu"
             self.device = device
+        self.batch_size_nnz = batch_size_nnz
 
     def _initialize_params(self, Y: torch.Tensor, init: str = "svd") -> tuple[torch.Tensor, torch.Tensor]:
         """
@@ -167,12 +172,13 @@ class PoissonGLMPCA:
                 V_k = torch.from_numpy(Vh.T.copy())
                 d_k = torch.from_numpy(s.copy())
             else:
-                Y_log1p = torch.log1p(Y)
+                # Perform SVD on CPU to avoid large VRAM spikes on GPU/MPS
+                Y_log1p_cpu = torch.log1p(Y.detach().to("cpu"))
                 try:
-                    U, S, Vh = torch.linalg.svd(Y_log1p, full_matrices=False)
+                    U, S, Vh = torch.linalg.svd(Y_log1p_cpu, full_matrices=False)
                     V = Vh.T
                 except torch.linalg.LinAlgError:
-                    U, S, V = torch.svd(Y_log1p)
+                    U, S, V = torch.svd(Y_log1p_cpu)
 
                 k = self.n_pcs
                 U_k = U[:, :k]
@@ -299,8 +305,9 @@ class PoissonGLMPCA:
             term1 = torch.tensor(0.0, device=self.device)
             nnz = vals.shape[0]
             # Choose a chunk size that balances memory and throughput
-            # Default to 262144, but cap by nnz
-            bsz_nnz = 262144
+            # If user provided, use it; otherwise adapt by device
+            default_nnz = 131072 if str(self.device) in ("cuda", "mps") else 262144
+            bsz_nnz = self.batch_size_nnz or default_nnz
             for s in range(0, nnz, bsz_nnz):
                 e = min(nnz, s + bsz_nnz)
                 rr = rows[s:e]
@@ -554,6 +561,7 @@ class PoissonGLMPCA:
             torch.manual_seed(self.seed)
             np.random.seed(self.seed)
 
+        # Handle scipy sparse inputs
         if sp.issparse(Y):
             self.is_sparse = True
             if self.verbose:
@@ -571,6 +579,15 @@ class PoissonGLMPCA:
                 self.device = "cpu"
                 Y_sparse = Y_sparse.to(self.device)
             Y = Y_sparse
+        # Handle torch sparse tensors directly
+        elif isinstance(Y, torch.Tensor) and (getattr(Y, "is_sparse", False) or getattr(Y, "layout", None) in (getattr(torch, "sparse_coo", None), getattr(torch, "sparse_csr", None))):
+            self.is_sparse = True
+            try:
+                Y = Y.to(self.device)
+            except (NotImplementedError, RuntimeError):
+                warnings.warn("Sparse tensor conversion to device not supported or failed. Using CPU.")
+                self.device = "cpu"
+                Y = Y.to(self.device)
         elif not isinstance(Y, torch.Tensor):
             Y = torch.tensor(Y, dtype=torch.float32, device=self.device)
         else:
