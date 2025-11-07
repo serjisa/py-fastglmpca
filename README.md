@@ -81,6 +81,8 @@ Function `fastglmpca.poisson` has the following parameters:
     Whether to use adaptive learning rate with backtracking. Default is True.
 - `lr_decay` : float, optional
     Decay factor for learning rate. Default is 0.5.
+- `slowing_loglik` : bool, optional
+    Whether to adaptively reduce learning rate when log-likelihood changing rate increases. Default is True.
 - `min_learning_rate` : float, optional
     Minimum learning rate. Default is 1e-5.
 - `max_backtracks` : int, optional
