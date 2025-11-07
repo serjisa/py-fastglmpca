@@ -32,6 +32,7 @@ class PoissonGLMPCA:
         learning_rate: float = 0.5,
         num_ccd_iter: int = 3,
         adaptive_lr: bool = True,
+        slowing_loglik: bool = True,
         lr_decay: float = 0.5,
         min_learning_rate: float = 1e-5,
         max_backtracks: int = 3,
@@ -73,6 +74,8 @@ class PoissonGLMPCA:
             Step size used in updates. Default is 0.5.
         adaptive_lr : bool, optional
             If True, reduce learning rate on log-likelihood drops. Default is True.
+        slowing_loglik : bool, optional
+            If True, adaptively reduce learning rate when log-likelihood changing rate increases. Default is True.
         lr_decay : float, optional
             Multiplicative decay factor applied when log-likelihood decreases. Default is 0.5.
         min_learning_rate : float, optional
@@ -101,6 +104,7 @@ class PoissonGLMPCA:
         self.lr_decay = lr_decay
         self.min_learning_rate = min_learning_rate
         self.max_backtracks = max_backtracks
+        self.slowing_loglik = slowing_loglik
 
         
         if self.seed:
@@ -126,6 +130,9 @@ class PoissonGLMPCA:
                 device = "cpu"
             self.device = device
         self.batch_size_nnz = batch_size_nnz
+        # Track improvement rate for adaptive LR adjustments
+        self._prev_delta_fit: float | None = None
+        self._prev_delta_project: float | None = None
 
     def _initialize_params(self, Y: torch.Tensor, init: str = "svd") -> tuple[torch.Tensor, torch.Tensor]:
         """
@@ -663,6 +670,8 @@ class PoissonGLMPCA:
         iterator = tqdm(range(self.max_iter), desc="GLM-PCA Iterations") if self.progress_bar else range(self.max_iter)
 
         lr_start = self.learning_rate
+        # Reset improvement rate tracker for this fit run
+        self._prev_delta_fit = None
         for i in iterator:
             prev_loglik = self.loglik_history_[-1]
 
@@ -709,11 +718,9 @@ class PoissonGLMPCA:
                     self.learning_rate = lr_prev * self.lr_decay
                     loglik = prev_loglik
 
-            # Record log-likelihood value robustly for both tensors and floats
             loglik_value = float(loglik.item() if hasattr(loglik, "item") else loglik)
             self.loglik_history_.append(loglik_value)
 
-            # Robust NaN check for both tensors and floats
             is_nan = False
             if torch.is_tensor(loglik):
                 is_nan = torch.isnan(loglik)
@@ -724,6 +731,12 @@ class PoissonGLMPCA:
                 break
 
             delta = abs((loglik - prev_loglik) / (abs(prev_loglik) + 1e-6))
+
+            if self.adaptive_lr and (float(loglik) >= float(prev_loglik)) and self.slowing_loglik:
+                prev_delta = self._prev_delta_fit
+                if (prev_delta is not None) and (float(delta) > float(prev_delta)):
+                    self.learning_rate = max(self.learning_rate * self.lr_decay, self.min_learning_rate)
+                self._prev_delta_fit = float(delta)
 
             if self.verbose:
                 print(f"Iter {i+1:3d} | Log-Likelihood: {loglik:.4f} | Change: {delta:.2e} | lr: {self.learning_rate:.3e}")
@@ -984,6 +997,8 @@ class PoissonGLMPCA:
         lr_start = self.learning_rate
         prev_ll = self._poisson_log_likelihood(Y_t, LL, FF_fixed).item()
         self.project_loglik_history_ = [prev_ll]
+        # Reset improvement rate tracker for this project run
+        self._prev_delta_project = None
         
         for i in iterator:
             LL_prev = LL.clone()
@@ -1012,6 +1027,12 @@ class PoissonGLMPCA:
                     cur_ll = prev_ll
 
             delta = abs((cur_ll - prev_ll) / (abs(prev_ll) + 1e-6))
+
+            if self.adaptive_lr and (float(cur_ll) >= float(prev_ll)) and self.slowing_loglik:
+                prev_delta = self._prev_delta_project
+                if (prev_delta is not None) and (float(delta) > float(prev_delta)):
+                    self.learning_rate = max(self.learning_rate * self.lr_decay, self.min_learning_rate)
+                self._prev_delta_project = float(delta)
             if show_bar:
                 if isinstance(iterator, tqdm):
                     iterator.set_postfix(delta=f"{delta:.2e}", loglik=f"{cur_ll:.4f}", lr=f"{self.learning_rate:.2e}")
