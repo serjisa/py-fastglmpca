@@ -1,12 +1,12 @@
 from __future__ import annotations
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 from .utils import PoissonGLMPCA
 
 if TYPE_CHECKING:
     import numpy as np
 
 # Public API for the fastglmpca package
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 __all__ = ["poisson", "PoissonGLMPCA", "__version__"]
 
 def __dir__():
@@ -34,6 +34,7 @@ def poisson(
     lr_decay: float = 0.5,
     min_learning_rate: float = 1e-5,
     max_backtracks: int = 3,
+    custom_iterator: Callable | None = None,
 ) -> PoissonGLMPCA | "np.ndarray":
     """
     Fit a Poisson GLM-PCA model to the input data.
@@ -81,6 +82,8 @@ def poisson(
         Minimum learning rate. Default is 1e-5.
     max_backtracks : int, optional
         Maximum number of backtracks for line search. Default is 3.
+    custom_iterator : Callable or None, optional
+        Custom iterator function for the optimization algorithm. If None, uses a default progress bar. Default is None.
 
     Returns
     -------
@@ -109,11 +112,7 @@ def poisson(
         min_learning_rate=min_learning_rate,
         max_backtracks=max_backtracks,
     )
-
-    model.fit(
-        X,
-        init=init,
-    )
+    model.fit(X, init=init, custom_iterator=custom_iterator)
 
     if return_model:
         return model

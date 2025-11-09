@@ -7,6 +7,7 @@ from tqdm import tqdm
 import scipy.sparse as sp
 from scipy.sparse.linalg import svds
 import math
+from typing import Callable
 
 
 class PoissonGLMPCA:
@@ -557,6 +558,7 @@ class PoissonGLMPCA:
         self,
         Y,
         init: str = "svd",
+        custom_iterator: Callable | None = None,
     ) -> PoissonGLMPCA:
         """
         Fit the Poisson GLM-PCA model.
@@ -567,6 +569,9 @@ class PoissonGLMPCA:
             Input count matrix of shape (n_samples, n_features).
         init : {"svd", "random"}
             Initialization method for LL and FF.
+        custom_iterator : Callable or None, optional
+            Iterator function to use for optimization. If None, uses tqdm if
+            `progress_bar` is True, otherwise standard range iterator. Default is None.
  
         Returns
         -------
@@ -667,7 +672,12 @@ class PoissonGLMPCA:
         if self.verbose:
             print(f"Initial Log-Likelihood: {loglik:.4f}")
 
-        iterator = tqdm(range(self.max_iter), desc="GLM-PCA Iterations") if self.progress_bar else range(self.max_iter)
+        if custom_iterator is None:
+            iterator = tqdm(
+                range(self.max_iter), desc="GLM-PCA Iterations"
+            ) if self.progress_bar else range(self.max_iter)
+        else:
+            iterator = custom_iterator(range(self.max_iter))
 
         lr_start = self.learning_rate
         # Reset improvement rate tracker for this fit run
@@ -739,9 +749,9 @@ class PoissonGLMPCA:
                 self._prev_delta_fit = float(delta)
 
             if self.verbose:
-                print(f"Iter {i+1:3d} | Log-Likelihood: {loglik:.4f} | Change: {delta:.2e} | lr: {self.learning_rate:.3e}")
+                print(f"Iter {i+1:3d} | Log-Likelihood: {loglik:.4f} | Δ: {delta:.2e} | LR: {self.learning_rate:.3e}")
             if self.progress_bar:
-                iterator.set_postfix(loglik=f"{loglik:.4f}", delta=f"{delta:.2e}", lr=f"{self.learning_rate:.2e}")
+                iterator.set_postfix({"Log-Likelihood": f"{loglik:.4f}", "Δ": f"{delta:.2e}", "LR": f"{self.learning_rate:.2e}"})
 
             if delta < self.tol:
                 if self.verbose:
@@ -874,6 +884,7 @@ class PoissonGLMPCA:
         progress_bar: bool | None = None,
         init: Literal["svd", "random"] = "svd",
         seed: int | None = None,
+        custom_iterator: Callable | None = None,
     ) -> np.ndarray:
         """
         Project new samples onto the existing GLM-PCA model by optimizing their
@@ -896,6 +907,9 @@ class PoissonGLMPCA:
             starts from small Gaussian noise. Default is "svd".
         seed : int or None, optional
             Random seed for reproducibility. Default is None.
+        iterator : Callable or None, optional
+            Iterator function to use for optimization. If None, uses tqdm if
+            `progress_bar` is True, otherwise standard range iterator. Default is None.
 
         Returns
         -------
@@ -992,7 +1006,13 @@ class PoissonGLMPCA:
         iters = max_iter if max_iter is not None else self.max_iter
         tol_use = tol if tol is not None else self.tol
         show_bar = progress_bar if progress_bar is not None else self.progress_bar
-        iterator = tqdm(range(iters), desc="Project (opt LL)") if show_bar else range(iters)
+        if custom_iterator is None:
+            iterator = tqdm(
+                range(iters),
+                desc="Project (opt LL)",
+            ) if show_bar else range(iters)
+        else:
+            iterator = custom_iterator(range(iters))
 
         lr_start = self.learning_rate
         prev_ll = self._poisson_log_likelihood(Y_t, LL, FF_fixed).item()
@@ -1035,7 +1055,7 @@ class PoissonGLMPCA:
                 self._prev_delta_project = float(delta)
             if show_bar:
                 if isinstance(iterator, tqdm):
-                    iterator.set_postfix(delta=f"{delta:.2e}", loglik=f"{cur_ll:.4f}", lr=f"{self.learning_rate:.2e}")
+                    iterator.set_postfix({"Log-Likelihood": f"{cur_ll:.4f}", "Δ": f"{delta:.2e}", "LR": f"{self.learning_rate:.2e}"})
             if delta < tol_use:
                 break
             prev_ll = cur_ll
