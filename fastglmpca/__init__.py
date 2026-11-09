@@ -6,7 +6,7 @@ if TYPE_CHECKING:
     import numpy as np
 
 # Public API for the fastglmpca package
-__version__ = "0.1.2"
+__version__ = "0.1.3"
 __all__ = ["poisson", "PoissonGLMPCA", "__version__"]
 
 def __dir__():
@@ -35,6 +35,7 @@ def poisson(
     min_learning_rate: float = 1e-5,
     max_backtracks: int = 3,
     custom_iterator: Callable | None = None,
+    integers: bool = True,
 ) -> PoissonGLMPCA | "np.ndarray":
     """
     Fit a Poisson GLM-PCA model to the input data.
@@ -84,6 +85,9 @@ def poisson(
         Maximum number of backtracks for line search. Default is 3.
     custom_iterator : Callable or None, optional
         Custom iterator function for the optimization algorithm. If None, uses a default progress bar. Default is None.
+    integers : bool, optional
+        If True, require input counts to be integer-valued and raise a ValueError otherwise.
+        If False, non-integer (continuous, nonnegative) values are accepted. Default is True.
 
     Returns
     -------
@@ -111,6 +115,7 @@ def poisson(
         lr_decay=lr_decay,
         min_learning_rate=min_learning_rate,
         max_backtracks=max_backtracks,
+        integers=integers,
     )
     model.fit(X, init=init, custom_iterator=custom_iterator)
 

@@ -37,6 +37,7 @@ class PoissonGLMPCA:
         lr_decay: float = 0.5,
         min_learning_rate: float = 1e-5,
         max_backtracks: int = 3,
+        integers: bool = True,
     ):
         """
         Initialize the Poisson GLM-PCA model.
@@ -83,6 +84,9 @@ class PoissonGLMPCA:
             Minimum allowed learning rate during adaptation. Default is 1e-5.
         max_backtracks : int, optional
             Maximum number of backtracking retries per iteration when log-likelihood decreases. Default is 3.
+        integers : bool, optional
+            If True, require input counts to be integer-valued and raise a ValueError otherwise.
+            If False, non-integer (continuous, nonnegative) values are accepted. Default is True.
         """
         
         if n_pcs < 1:
@@ -106,6 +110,7 @@ class PoissonGLMPCA:
         self.min_learning_rate = min_learning_rate
         self.max_backtracks = max_backtracks
         self.slowing_loglik = slowing_loglik
+        self.integers = integers
 
         
         if self.seed:
@@ -554,6 +559,47 @@ class PoissonGLMPCA:
             return LL, FF
 
 
+    def _validate_counts(self, Y: torch.Tensor, is_sparse: bool) -> None:
+        """
+        Validate the input count matrix.
+
+        Always requires nonnegative values. If `self.integers` is True, also
+        requires values to be integer-like (floats representing integers).
+
+        Parameters
+        ----------
+        Y : torch.Tensor
+            Dense or sparse input matrix.
+        is_sparse : bool
+            Whether `Y` is a sparse tensor.
+
+        Raises
+        ------
+        ValueError
+            If negative or (when required) non-integer values are found.
+        """
+        kind = "sparse" if is_sparse else "dense"
+        if is_sparse:
+            try:
+                Yc = Y.coalesce()
+                vals = Yc.values() if hasattr(Yc, "values") else Y._values()
+            except Exception:
+                vals = Y._values()
+        else:
+            vals = Y
+        if vals.numel() == 0:
+            return
+        if torch.any(vals < 0):
+            raise ValueError(f"Input count matrix must be nonnegative; found negative values in {kind} data.")
+        if getattr(self, "integers", True):
+            tol_int = 1e-6
+            frac_dev = torch.abs(vals - torch.round(vals))
+            if torch.any(frac_dev > tol_int):
+                raise ValueError(
+                    f"Input count matrix must consist of integers; found non-integer values in {kind} data. "
+                    "Pass integers=False to allow non-integer values."
+                )
+
     def fit(
         self,
         Y,
@@ -618,23 +664,8 @@ class PoissonGLMPCA:
         else:
             Y = Y.to(self.device)
 
-        # Validate integer-like counts (values may be float but must represent integers)
-        tol_int = 1e-6
-        if self.is_sparse:
-            try:
-                Yc = Y.coalesce()
-                vals = Yc.values() if hasattr(Yc, "values") else Y._values()
-            except Exception:
-                vals = Y._values()
-            if vals.numel() > 0:
-                frac_dev = torch.abs(vals - torch.round(vals))
-                if torch.any(frac_dev > tol_int):
-                    raise ValueError("Input count matrix must consist of integers; found non-integer values in sparse data.")
-        else:
-            if Y.numel() > 0:
-                frac_dev = torch.abs(Y - torch.round(Y))
-                if torch.any(frac_dev > tol_int):
-                    raise ValueError("Input count matrix must consist of integers; found non-integer values in dense data.")
+        # Validate counts: nonnegative, and integer-like if `integers` is True
+        self._validate_counts(Y, self.is_sparse)
 
         self.row_offset = torch.zeros(Y.shape[0], device=self.device)
         self.col_offset = torch.zeros(Y.shape[1], device=self.device)
@@ -943,22 +974,7 @@ class PoissonGLMPCA:
                 f"Feature dimension mismatch: new data has {m_new}, model expects {m_model}."
             )
 
-        tol_int = 1e-6
-        if local_is_sparse:
-            try:
-                Yc = Y_t.coalesce()
-                vals = Yc.values() if hasattr(Yc, "values") else Y_t._values()
-            except Exception:
-                vals = Y_t._values()
-            if vals.numel() > 0:
-                frac_dev = torch.abs(vals - torch.round(vals))
-                if torch.any(frac_dev > tol_int):
-                    raise ValueError("Input count matrix must be integer-like; found non-integer values in sparse data.")
-        else:
-            if Y_t.numel() > 0:
-                frac_dev = torch.abs(Y_t - torch.round(Y_t))
-                if torch.any(frac_dev > tol_int):
-                    raise ValueError("Input count matrix must be integer-like; found non-integer values in dense data.")
+        self._validate_counts(Y_t, local_is_sparse)
 
         V_t = torch.tensor(self.V, dtype=torch.float32, device=self.device)
         d_t = torch.tensor(self.d, dtype=torch.float32, device=self.device)

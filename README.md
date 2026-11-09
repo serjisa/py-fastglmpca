@@ -87,3 +87,5 @@ Function `fastglmpca.poisson` has the following parameters:
     Minimum learning rate. Default is 1e-5.
 - `max_backtracks` : int, optional
     Maximum number of backtracks for line search. Default is 3.
+- `integers` : bool, optional
+    If True, require input values to be integer counts and raise a `ValueError` otherwise. Set to False to allow non-integer (continuous, nonnegative) values, e.g. normalized or weighted counts. Default is True.

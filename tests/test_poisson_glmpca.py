@@ -232,6 +232,49 @@ def test_fit_sparse_non_integer_raises():
         model.fit(Y_sparse, init="random")
 
 
+def test_fit_non_integer_allowed_when_integers_false():
+    rng = np.random.default_rng(5)
+    Y = (make_dense_data(n=12, m=8, rate=1.2, seed=5) * rng.uniform(0.5, 1.5, size=(12, 8))).astype(np.float32)
+    assert np.any(np.abs(Y - np.round(Y)) > 1e-3)
+    for data in (Y, sp.coo_matrix(Y)):
+        model = PoissonGLMPCA(n_pcs=2, max_iter=5, device="cpu", progress_bar=False, seed=5, integers=False)
+        model.fit(data, init="svd")
+        assert model.U.shape == (12, 2)
+        assert np.all(np.isfinite(model.U))
+        U_new = model.project(Y[:4], max_iter=5, progress_bar=False)
+        assert U_new.shape == (4, 2)
+
+
+def test_poisson_wrapper_integers_flag():
+    from fastglmpca import poisson
+    Y = make_dense_data(n=10, m=8, rate=1.2, seed=6) + 0.25
+    with pytest.raises(ValueError):
+        poisson(Y, n_pcs=2, max_iter=3, device="cpu", progress_bar=False)
+    U = poisson(Y, n_pcs=2, max_iter=3, device="cpu", progress_bar=False, integers=False)
+    assert U.shape == (10, 2)
+
+
+@pytest.mark.parametrize("integers", [True, False])
+@pytest.mark.parametrize("sparse", [False, True])
+def test_negative_values_raise(integers, sparse):
+    Y = make_dense_data(n=10, m=8, rate=1.2, seed=7)
+    Y[2, 3] = -1.0
+    data = sp.coo_matrix(Y) if sparse else Y
+    model = PoissonGLMPCA(n_pcs=2, max_iter=3, device="cpu", progress_bar=False, integers=integers)
+    with pytest.raises(ValueError, match="nonnegative"):
+        model.fit(data)
+
+
+def test_project_negative_values_raise():
+    Y = make_dense_data(n=10, m=8, rate=1.2, seed=8)
+    model = PoissonGLMPCA(n_pcs=2, max_iter=3, device="cpu", progress_bar=False, integers=False)
+    model.fit(Y)
+    Y_bad = Y[:3].copy()
+    Y_bad[0, 0] = -0.5
+    with pytest.raises(ValueError, match="nonnegative"):
+        model.project(Y_bad, max_iter=3, progress_bar=False)
+
+
 def test_col_size_factor_dense_sets_col_offset_only():
     Y = np.array([[1, 2, 3, 4],
                   [0, 1, 0, 2],
